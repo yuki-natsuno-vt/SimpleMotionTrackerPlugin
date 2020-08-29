@@ -1,0 +1,2 @@
+# SimpleMotionTrackerPlugin
+OpenCVを使った顏やARマーカー認識をラップしてUnityで使いやすくしたものです。
