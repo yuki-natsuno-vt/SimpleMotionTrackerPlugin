@@ -23,10 +23,12 @@ public:
 
 	void setUseARMarker(bool useARMarker);
 	void setUseFaceTracking(bool useFaceTracking);
-	void setUseEyeTracking(bool useEyeTracking);
+	void setUseEyesTracking(bool useEyesTracking);
 
 	void setCaptureShown(bool isShown);
 	bool isCaptureShown();
+
+	void setIrisThresh(int thresh) { _irisThresh = thresh; }
 
 	void setARMarkerEdgeLength(float length);
 	bool isARMarkerDetected(int id);
@@ -44,10 +46,11 @@ private:
 	void detectARMarker();
 
 	void detectFace();
+	void detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
 
 	bool _useARMarker = false;
 	bool _useFaceTracking = false;
-	bool _useEyeTracking = false;
+	bool _useEyesTracking = false;
 	bool _isCaptureShown = false;
 
 	static const char* WINDOW_NAME;
@@ -75,6 +78,10 @@ private:
 	float _faceCircle[3]; // X,Y,半径
 	float _leftEyeCircle[3];
 	float _rightEyeCircle[3];
+	float _leftIrisCircle[3];
+	float _rightIrisCircle[3];
+
+	int _irisThresh = 30;
 
 
 	int _errorCode = SMT_ERROR_NOEN;
@@ -121,7 +128,7 @@ void SimpleMotionTracker::init(int cameraId) {
 	auto end = std::chrono::system_clock::now();
 	auto dur = end - start;
 	auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(dur).count();
-	if (msec > 50) {
+	if (msec > 500) {
 		_errorCode = SMT_ERROR_INSUFFICIENT_CAMERA_CAPTURE_SPEED;
 		return;
 	}
@@ -156,6 +163,8 @@ void SimpleMotionTracker::init(int cameraId) {
 		_faceCircle[i] = 0;
 		_leftEyeCircle[i] = 0;
 		_rightEyeCircle[i] = 0;
+		_leftIrisCircle[i] = 0;
+		_rightIrisCircle[i] = 0;
 	}
 }
 
@@ -174,10 +183,9 @@ void SimpleMotionTracker::update() {
 		if (_useARMarker) {
 			detectARMarker();
 		}
-		if (_useFaceTracking) {
+		if (_useFaceTracking || _useEyesTracking) {
 			detectFace();
 		}
-
 
 		if (_isCaptureShown) {
 			cv::imshow(WINDOW_NAME, _outputFrame);
@@ -197,8 +205,8 @@ void SimpleMotionTracker::setUseFaceTracking(bool useFaceTracking) {
 	_useFaceTracking = useFaceTracking;
 }
 
-void SimpleMotionTracker::setUseEyeTracking(bool useEyeTracking) {
-	_useEyeTracking = useEyeTracking;
+void SimpleMotionTracker::setUseEyesTracking(bool useEyesTracking) {
+	_useEyesTracking = useEyesTracking;
 }
 
 void SimpleMotionTracker::setCaptureShown(bool isShown) {
@@ -286,17 +294,62 @@ void SimpleMotionTracker::getARMarker6DoF(int id, float* outArray) {
 	}
 }
 
+void SimpleMotionTracker::detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris) {
+	if (eyeRect.width > 0) {
+		auto eyeFrame = faceFrame(eyeRect);
+		cv::equalizeHist(eyeFrame, eyeFrame);
+
+		// 虹彩検出
+		cv::equalizeHist(eyeFrame, eyeFrame);
+		cv::threshold(eyeFrame, eyeFrame, irisThresh, 255, cv::THRESH_BINARY_INV);
+
+		int morphSize = 1;
+		cv::Mat element = cv::getStructuringElement(0, cv::Size(2 * morphSize + 1, 2 * morphSize + 1), cv::Point(morphSize, morphSize));
+		cv::morphologyEx(eyeFrame, eyeFrame, cv::MORPH_CLOSE, element);
+		cv::morphologyEx(eyeFrame, eyeFrame, cv::MORPH_OPEN, element);
+		cv::bitwise_not(eyeFrame, eyeFrame);
+
+		cv::GaussianBlur(eyeFrame, eyeFrame, cv::Size(5, 5), 0);
+		cv::threshold(eyeFrame, eyeFrame, 0, 255, cv::THRESH_BINARY);
+
+
+		int cannyThresh = 100;
+		cv::Mat cannyOutput;
+		cv::Canny(eyeFrame, cannyOutput, cannyThresh, cannyThresh * 2);
+		std::vector<std::vector<cv::Point>> contours;
+		cv::findContours(cannyOutput, contours, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+
+		std::vector<std::vector<cv::Point>> contoursPoly(contours.size());
+		std::vector<cv::Rect> boundRect(contours.size());
+		std::vector<cv::Point2f>centers(contours.size());
+		for (size_t i = 0; i < contours.size(); i++) {
+			approxPolyDP(contours[i], contoursPoly[i], 3, true);
+			boundRect[i] = boundingRect(contoursPoly[i]);
+		}
+
+		cv::Rect max;
+		for (auto rect : boundRect) {
+			if (max.width < rect.width) {
+				max = rect;
+			}
+		}
+		outIris = max;
+		//cv::rectangle(eyeFrame, max.tl(), max.br(), cv::Scalar(0, 0, 0), 2);
+		//cv::imshow("test", eyeFrame);
+	}
+}
+
 void SimpleMotionTracker::detectFace() {
 	_isFacePointsDetected = false;
 
 	cv::Mat frameGray;
 	cv::cvtColor(_capFrame, frameGray, cv::COLOR_BGR2GRAY);
-	cv::equalizeHist(frameGray, frameGray);
 
 	// 顏検出用に縮小画像で負荷軽減.
 	cv::Mat faceDetectFrame;
 	const float resizeRate = 0.2f;
 	cv::resize(frameGray, faceDetectFrame, cv::Size(frameGray.cols * resizeRate, (frameGray.rows * resizeRate)));
+	cv::equalizeHist(faceDetectFrame, faceDetectFrame);
 
 	float detectedAngle = 0;
 	for (auto angle : { 0, -20, 20, -40, 40 }) {
@@ -311,6 +364,8 @@ void SimpleMotionTracker::detectFace() {
 		cv::Rect face;
 		cv::Rect leftEye;
 		cv::Rect rightEye;
+		cv::Rect leftIris;
+		cv::Rect rightIris;
 
 		for (auto f : faces) {
 			f.x *= 5;
@@ -328,13 +383,14 @@ void SimpleMotionTracker::detectFace() {
 			cv::Rect upperFace(f);
 			upperFace.height /= 4;
 			upperFace.y += upperFace.height;
-			cv::Mat faceFrame = frameGray(upperFace);
+			cv::Mat faceFrame = frameGray(upperFace).clone();
+			cv::equalizeHist(faceFrame, faceFrame);
 			std::vector<cv::Rect> eyes;
 			_eyesCascade.detectMultiScale(faceFrame, eyes);
 
 			// 左右の目に振り分け.
 			for (auto eye : eyes) {
-				if ((eye.x + eye.width / 2) < (faceFrame.cols / 2)) {
+				if ((eye.x + eye.width / 2) > (faceFrame.cols / 2)) {
 					if (eye.width > leftEye.width) {
 						leftEye = eye;
 					}
@@ -346,20 +402,37 @@ void SimpleMotionTracker::detectFace() {
 				}
 			}
 			detectedAngle = angle;
+
+			// 虹彩検出
+			if (_useEyesTracking) {
+				faceFrame = frameGray(upperFace).clone();
+				if (leftEye.width > 0) {
+					detectIris(_irisThresh, faceFrame, leftEye, leftIris);
+				}
+				if (rightEye.width > 0) {
+					detectIris(_irisThresh, faceFrame, rightEye, rightIris);
+				}
+			}
 		}
 
 		if (face.width > 0) {
 			cv::Mat_<double> trans = cv::getRotationMatrix2D(cv::Point2f(0,0), -detectedAngle, 1.0f);
 			cv::Point2f frameCenter(frameGray.cols / 2, frameGray.rows / 2);
-			{
-				cv::Point2f faceCenter(face.x + face.width / 2, face.y + face.height / 2);
-				float x = faceCenter.x - frameCenter.x;
-				float y = faceCenter.y - frameCenter.y;
+
+			auto afinTransform = [=](const cv::Rect& rect) {
+				cv::Point2f center(rect.x + rect.width / 2, rect.y + rect.height / 2);
+				float x = center.x - frameCenter.x;
+				float y = center.y - frameCenter.y;
 				float x2 = frameCenter.x + (trans(0, 0) * x + trans(0, 1) * y);
 				float y2 = frameCenter.y + (trans(1, 0) * x + trans(1, 1) * y);
-				cv::circle(_outputFrame, cv::Point(x2, y2), face.width / 2, cv::Scalar(255, 0, 255), 2);
-				_faceCircle[0] = x2;
-				_faceCircle[1] = y2;
+				return cv::Point2f(x2, y2);
+			};
+
+			{
+				auto p = afinTransform(face);
+				cv::circle(_outputFrame, p, face.width / 2, cv::Scalar(255, 0, 255), 2);
+				_faceCircle[0] = p.x;
+				_faceCircle[1] = p.y;
 				_faceCircle[2] = face.width / 2;
 			}
 			{
@@ -370,29 +443,43 @@ void SimpleMotionTracker::detectFace() {
 					leftEye.x += upperFace.x;
 					leftEye.y += upperFace.y;
 
-					cv::Point2f eyeCenter(leftEye.x + leftEye.width / 2, leftEye.y + leftEye.height / 2);
-					float x = eyeCenter.x - frameCenter.x;
-					float y = eyeCenter.y - frameCenter.y;
-					float x2 = frameCenter.x + (trans(0, 0) * x + trans(0, 1) * y);
-					float y2 = frameCenter.y + (trans(1, 0) * x + trans(1, 1) * y);
-					cv::circle(_outputFrame, cv::Point(x2, y2), leftEye.width / 2, cv::Scalar(255, 255), 2);
-					_leftEyeCircle[0] = x2;
-					_leftEyeCircle[1] = y2;
+					auto p = afinTransform(leftEye);
+					cv::circle(_outputFrame, p, leftEye.width / 2, cv::Scalar(255, 255, 0), 2);
+					_leftEyeCircle[0] = p.x;
+					_leftEyeCircle[1] = p.y;
 					_leftEyeCircle[2] = leftEye.width / 2;
 				}
 				if (rightEye.width > 0) {
 					rightEye.x += upperFace.x;
 					rightEye.y += upperFace.y;
 
-					cv::Point2f eyeCenter(rightEye.x + rightEye.width / 2, rightEye.y + rightEye.height / 2);
-					float x = eyeCenter.x - frameCenter.x;
-					float y = eyeCenter.y - frameCenter.y;
-					float x2 = frameCenter.x + (trans(0, 0) * x + trans(0, 1) * y);
-					float y2 = frameCenter.y + (trans(1, 0) * x + trans(1, 1) * y);
-					cv::circle(_outputFrame, cv::Point(x2, y2), rightEye.width / 2, cv::Scalar(255, 255), 2);
-					_rightEyeCircle[0] = x2;
-					_rightEyeCircle[1] = y2;
+					auto p = afinTransform(rightEye);
+					cv::circle(_outputFrame, p, rightEye.width / 2, cv::Scalar(255, 255, 0), 2);
+					_rightEyeCircle[0] = p.x;
+					_rightEyeCircle[1] = p.y;
 					_rightEyeCircle[2] = rightEye.width / 2;
+				}
+			}
+			{
+				if (leftEye.width > 0 && leftIris.width > 0) {
+					leftIris.x += leftEye.x;
+					leftIris.y += leftEye.y;
+
+					auto p = afinTransform(leftIris);
+					cv::circle(_outputFrame, p, leftIris.height / 2, cv::Scalar(0, 0, 255), 2);
+					_leftIrisCircle[0] = p.x;
+					_leftIrisCircle[1] = p.y;
+					_leftIrisCircle[2] = (float)(leftIris.height) / leftIris.width;
+				}
+				if (rightEye.width > 0 && rightIris.width > 0) {
+					rightIris.x += rightEye.x;
+					rightIris.y += rightEye.y;
+
+					auto p = afinTransform(rightIris);
+					cv::circle(_outputFrame, p, rightIris.height / 2, cv::Scalar(0, 0, 255), 2);
+					_rightIrisCircle[0] = p.x;
+					_rightIrisCircle[1] = p.y;
+					_rightIrisCircle[2] = (float)(rightIris.height) / rightIris.width;
 				}
 			}
 
@@ -417,7 +504,15 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[6] = _rightEyeCircle[0];
 	outArray[7] = _rightEyeCircle[1];
 	outArray[8] = _rightEyeCircle[2];
+	outArray[9]  = _leftIrisCircle[0];
+	outArray[10] = _leftIrisCircle[1];
+	outArray[11] = _leftIrisCircle[2];
+	outArray[12] = _rightIrisCircle[0];
+	outArray[13] = _rightIrisCircle[1];
+	outArray[14] = _rightIrisCircle[2];
 }
+
+
 
 /*----------------------------------------------------------
                          DLL用API
@@ -461,9 +556,9 @@ void SMT_setUseFaceTracking(bool useFaceTracking) {
 	instance->setUseFaceTracking(useFaceTracking);
 }
 
-void SMT_setUseEyeTracking(bool useEyeTracking) {
+void SMT_setUseEyeTracking(bool useEyesTracking) {
 	if (instance == nullptr) return;
-	instance->setUseEyeTracking(useEyeTracking);
+	instance->setUseEyesTracking(useEyesTracking);
 }
 
 void SMT_setCaptureShown(bool isShown) {
