@@ -596,6 +596,11 @@ void SMT_getFacePoints(float* outArray) {
 	instance->getFacePoints(outArray);
 }
 
+void SMT_setIrisThresh(int thresh) {
+	if (instance == nullptr) return;
+	instance->setIrisThresh(thresh);
+}
+
 void SMT_cvWait() {
 	cv::waitKey(1);
 }
@@ -603,4 +608,45 @@ void SMT_cvWait() {
 int SMT_getErrorCode() {
 	if (instance == nullptr) return SMT_ERROR_NOEN;
 	return instance->getErrorCode();
+}
+
+// for Windows
+bool SMT_getOpenFileName(char* outFilePath, int size) {
+	OPENFILENAME ofn = { 0 };
+	constexpr int SIZE = MAX_PATH * 4;
+	TCHAR filePath[SIZE] = { 0 };
+
+	ofn.lStructSize = sizeof(OPENFILENAME);
+	ofn.lpstrFilter = TEXT("Config files (*.cfg)\0*.cfg\0") TEXT("All files (*.*)\0*.*\0\0");
+	ofn.nFilterIndex = 1;
+	ofn.lpstrTitle = TEXT("Load Files");
+	ofn.nMaxCustFilter = 256;
+	ofn.lpstrFile = filePath;
+	ofn.nMaxFile = SIZE;
+	ofn.Flags = OFN_FILEMUSTEXIST;
+	bool result = GetOpenFileName(&ofn);
+
+	WideCharToMultiByte(CP_ACP, 0, filePath, -1, outFilePath, size, NULL, NULL);
+	return result;
+}
+
+
+// for Windows
+bool SMT_getSaveFileName(char* outFilePath, int size) {
+	OPENFILENAME ofn = { 0 };
+	constexpr int SIZE = MAX_PATH * 4;
+	TCHAR filePath[SIZE] = { 0 };
+
+	ofn.lStructSize = sizeof(OPENFILENAME);
+	ofn.lpstrFilter = TEXT("Config files (*.cfg)\0*.cfg\0") TEXT("All files (*.*)\0*.*\0\0");
+	ofn.nFilterIndex = 1;
+	ofn.lpstrTitle = TEXT("Load Files");
+	ofn.nMaxCustFilter = 256;
+	ofn.lpstrFile = filePath;
+	ofn.nMaxFile = SIZE;
+	ofn.Flags = OFN_FILEMUSTEXIST;
+	bool result = GetSaveFileName(&ofn);
+
+	WideCharToMultiByte(CP_ACP, 0, filePath, -1, outFilePath, size, NULL, NULL);
+	return result;
 }

@@ -33,6 +33,11 @@ extern "C" {
 	SIMPLEMOTIONTRACKER_API bool SMT_isFacePointsDetected();
 	SIMPLEMOTIONTRACKER_API void SMT_getFacePoints(float* outArray);
 
+	SIMPLEMOTIONTRACKER_API void SMT_setIrisThresh(int thresh);
+
 	SIMPLEMOTIONTRACKER_API void SMT_cvWait();
 	SIMPLEMOTIONTRACKER_API int SMT_getErrorCode();
+
+	SIMPLEMOTIONTRACKER_API bool SMT_getOpenFileName(char* outFilePath, int size);
+	SIMPLEMOTIONTRACKER_API bool SMT_getSaveFileName(char* outFilePath, int size);
 }

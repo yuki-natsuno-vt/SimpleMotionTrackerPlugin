@@ -2,6 +2,8 @@
 #include <cstdio>
 
 int main() {
+	//char hoge[1024] = {};
+	//SMT_getSaveFileName(hoge, 1024);
 	//SMT_init("Logicool HD Webcam C270");
 	//SMT_init("FaceRig Virtual Camera");
 	SMT_initRaw(1);
