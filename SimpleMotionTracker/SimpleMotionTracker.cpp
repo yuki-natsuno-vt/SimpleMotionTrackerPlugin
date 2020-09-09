@@ -24,6 +24,7 @@ public:
 	void setUseARMarker(bool useARMarker);
 	void setUseFaceTracking(bool useFaceTracking);
 	void setUseEyesTracking(bool useEyesTracking);
+	void setUseHandTracking(bool useHandTracking);
 
 	void setCaptureShown(bool isShown);
 	bool isCaptureShown();
@@ -34,10 +35,16 @@ public:
 	bool isARMarkerDetected(int id);
 	void getARMarker6DoF(int id, float* outArray);
 
+
+	void setMinHandTranslationThreshold(int thresh) { _minHandTranslationThreshold = thresh; }
+	void setMaxHandTranslationThreshold(int thresh) { _maxHandTranslationThreshold = thresh; }
+	void setHandUndetectedDuration(int msec) { _handUndetectedDuration = msec; }
 	bool isFacePointsDetected();
 	void getFacePoints(float* outArray);
 
-
+	bool isLeftHandDetected();
+	bool isRightHandDetected();
+	void getHandPoints(float* outArray);
 
 	int getErrorCode();
 
@@ -48,9 +55,15 @@ private:
 	void detectFace();
 	void detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
 
+	void detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick,
+		                  const cv::Point& point, std::vector<cv::Point>& points,
+		                  float minHandRadius, float maxHandRadius);
+	void detectHand();
+
 	bool _useARMarker = false;
 	bool _useFaceTracking = false;
 	bool _useEyesTracking = false;
+	bool _useHandTracking = false;
 	bool _isCaptureShown = false;
 
 	static const char* WINDOW_NAME;
@@ -82,6 +95,17 @@ private:
 	float _rightIrisCircle[3];
 
 	int _irisThresh = 30;
+
+	cv::Ptr<cv::BackgroundSubtractor> _backSub; // 手検出用の背景除去マスク
+	float _minHandTranslationThreshold = 0.01f;
+	float _maxHandTranslationThreshold = 0.5f;
+	bool _isLeftHandDetected = false;
+	bool _isRightHandDetected = false;
+	int _leftHandUndetectedTick = 0;
+	int _rightHandUndetectedTick = 0;
+	int _handUndetectedDuration = 500; // ミリ秒
+	float _leftHandCircle[3];
+	float _rightHandCircle[3];
 
 
 	int _errorCode = SMT_ERROR_NOEN;
@@ -166,6 +190,17 @@ void SimpleMotionTracker::init(int cameraId) {
 		_leftIrisCircle[i] = 0;
 		_rightIrisCircle[i] = 0;
 	}
+
+	// 手検出
+	_backSub = cv::createBackgroundSubtractorMOG2();
+	_isLeftHandDetected = false;
+	_isRightHandDetected = false;
+	_leftHandUndetectedTick = 0;
+	_rightHandUndetectedTick = 0;
+	for (int i = 0; i < 3; i++) {
+		_leftHandCircle[i] = 0;
+		_rightHandCircle[i] = 0;
+	}
 }
 
 void SimpleMotionTracker::destroy() {
@@ -185,6 +220,9 @@ void SimpleMotionTracker::update() {
 		}
 		if (_useFaceTracking || _useEyesTracking) {
 			detectFace();
+		}
+		if (_useHandTracking) {
+			detectHand();
 		}
 
 		if (_isCaptureShown) {
@@ -207,6 +245,10 @@ void SimpleMotionTracker::setUseFaceTracking(bool useFaceTracking) {
 
 void SimpleMotionTracker::setUseEyesTracking(bool useEyesTracking) {
 	_useEyesTracking = useEyesTracking;
+}
+
+void SimpleMotionTracker::setUseHandTracking(bool useHandTracking) {
+	_useHandTracking = useHandTracking;
 }
 
 void SimpleMotionTracker::setCaptureShown(bool isShown) {
@@ -512,7 +554,213 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[14] = _rightIrisCircle[2];
 }
 
+void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius) {
+	bool isDetected = isHandDetected;
+	int currentTickCount = GetTickCount();
+	int count = points.size();
 
+	// 最小半径時の円の面積と動体検知量比較する
+	// 非検知状態から検知状態への移行は大きく動く必要がある.
+	// 一度検知が途切れても一定時間内であれば低い閾値で再検知する
+	float thresholdRatio = _minHandTranslationThreshold;
+	if (!isDetected) {
+		if (currentTickCount > handUndetectedTick + _handUndetectedDuration) {
+			thresholdRatio = _maxHandTranslationThreshold;
+		}
+	}
+	int translationThrashold = (minHandRadius * minHandRadius * 3.14f) * thresholdRatio;
+	if (count > translationThrashold) {
+		isDetected = true;
+	}
+	else {
+		isDetected = false;
+	}
+
+	// 半径の計算
+	if (isDetected) {
+		float radius = 0;
+		int rx = 0;
+		int ry = 0;
+
+		// Z値として使うために半径を計算
+		// 平均位置から各動体検知座標へのX,Y成分ごとの平均値も計算
+
+		for (int i = 0; i < count; i++) {
+			auto x = points[i].x - point.x;
+			auto y = points[i].y - point.y;
+			radius += std::sqrtf((x * x) + (y * y));
+			rx += std::abs(x);
+			ry += std::abs(y);
+		}
+		radius /= count;
+		rx /= count;
+		ry /= count;
+
+		// X,Y成分の比率が1から離れると、円形ではなく長方形の動体が検知されたことになる.
+		// 半径をそのまま使うと長い辺の影響を受けるので、短い辺に合わせて補正する.
+		float ratio = (float)rx / ry;
+		if (ratio > 1) { ratio = 1.0f / ratio; }
+		radius *= ratio;
+
+		if (radius < minHandRadius) {
+			radius = minHandRadius;
+		}
+		else if (radius > maxHandRadius) {
+			radius = maxHandRadius;
+		}
+
+		handCircle[0] = point.x;
+		handCircle[1] = point.y;
+		handCircle[2] = radius;
+		handUndetectedTick = currentTickCount;
+
+		cv::circle(_outputFrame, point, radius, cv::Scalar(0, 255, 0), 2);
+
+		//{
+		//	static float radiusAve = 0;
+		//	radiusAve = radiusAve * 0.9 + rightRadius * 0.1;
+		//	printf("%f\n", radiusAve);
+		//}
+	}
+	isHandDetected = isDetected;
+}
+
+void SimpleMotionTracker::detectHand() {
+	cv::Mat handFrame = _capFrame.clone();
+	cv::Mat handFrameGray;
+	cv::cvtColor(handFrame, handFrameGray, cv::COLOR_BGR2GRAY);
+	cv::equalizeHist(handFrameGray, handFrameGray);
+
+	auto faceCenter = cv::Point(0, 0);
+	auto faceRadius = 0;
+	if (_useFaceTracking) {
+		faceCenter.x = _faceCircle[0];
+		faceCenter.y = _faceCircle[1];
+		faceRadius = _faceCircle[2];
+	}
+	else {
+		std::vector<cv::Rect> faces; // 複数検出を考慮.
+		cv::Mat resizedFrame;
+		const float resizeRate = 0.2f;
+		cv::resize(handFrameGray, resizedFrame, cv::Size(handFrameGray.cols * resizeRate, (handFrameGray.rows * resizeRate)));
+		_faceCascade.detectMultiScale(resizedFrame, faces);
+		if (faces.size() > 0) {
+			auto f = faces[0];
+			f.x /= resizeRate;
+			f.y /= resizeRate;
+			f.width /= resizeRate;
+			f.height /= resizeRate;
+			faceCenter = cv::Point(f.x + f.width / 2, f.y + f.height / 2);
+			faceRadius = f.width / 2;
+			_faceCircle[0] = faceCenter.x;
+			_faceCircle[1] = faceCenter.y;
+			_faceCircle[2] = faceRadius;
+		}
+	}
+
+	int minHandRadius = faceRadius * 0.5f;
+	int maxHandRadius = faceRadius * 1.5f;
+
+	// 顔を見つけられなかった場合は古い情報を拡大して使う
+	if (faceRadius == 0) {
+		faceCenter.x = _faceCircle[0];
+		faceCenter.y = _faceCircle[1];
+		faceRadius = _faceCircle[2] * 1.5f;
+	}
+
+	float resizeRatio = 1.0f;
+	cv::Mat handBSMask;
+	cv::resize(handFrameGray, handFrameGray, cv::Size(handFrameGray.cols * resizeRatio, handFrameGray.rows * resizeRatio));
+	_backSub->apply(handFrameGray, handBSMask, 0.2);
+
+	faceCenter.y -= (faceRadius / 2);
+	faceRadius *= 1.5f;
+
+	faceCenter.x *= resizeRatio;
+	faceCenter.y *= resizeRatio;
+	faceRadius *= resizeRatio;
+
+	cv::circle(handBSMask, faceCenter, faceRadius, cv::Scalar(0, 0, 0), -1);
+
+	// 検出された部分を一回り小さくする
+	{
+		int erosion_size = 1;
+		int erosion_type = 0;
+		erosion_type = cv::MORPH_RECT;
+		//erosion_type = cv::MORPH_CROSS;
+		//erosion_type = cv::MORPH_ELLIPSE;
+		cv::Mat element = getStructuringElement(erosion_type,
+			cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1),
+			cv::Point(erosion_size, erosion_size));
+		cv::erode(handBSMask, handBSMask, element);
+		// 小さくした後拡大
+		//cv::dilate(handBSMask, handBSMask, element);
+	}
+
+	// 孤立している小さな検出点(ノイズ)を除去
+	{
+		int morphSize = 1;
+		cv::Mat element = cv::getStructuringElement(0, cv::Size(2 * morphSize + 1, 2 * morphSize + 1), cv::Point(morphSize, morphSize));
+		cv::morphologyEx(handBSMask, handBSMask, cv::MORPH_OPEN, element);
+		cv::threshold(handBSMask, handBSMask, 0, 255, cv::THRESH_BINARY);
+	}
+
+	std::vector<cv::Point> leftPoints;
+	std::vector<cv::Point> rightPoints;
+	int leftCount = 0;
+	int rightCount = 0;
+	cv::Point leftPoint, rightPoint;
+	for (int x = 0; x < handBSMask.cols; x++) {
+		for (int y = 0; y < handBSMask.rows; y++) {
+			auto c = handBSMask.at<uchar>(y, x);
+			if (c > 0) {
+				if (x > faceCenter.x) { // 画面右側（左手）
+					leftCount++;
+					leftPoint.x += x / resizeRatio;
+					leftPoint.y += y / resizeRatio;
+
+					leftPoints.push_back(cv::Point( x / resizeRatio, y / resizeRatio));
+				}
+				else {
+					rightCount++;
+					rightPoint.x += x / resizeRatio;
+					rightPoint.y += y / resizeRatio;
+
+					rightPoints.push_back(cv::Point(x / resizeRatio, y / resizeRatio));
+				}
+			}
+		}
+	}
+	// 座標の平均と
+	if (leftCount > 0) {
+		leftPoint.x /= leftCount;
+		leftPoint.y /= leftCount;
+		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius);
+	}
+	if (rightCount > 0) {
+		rightPoint.x /= rightCount;
+		rightPoint.y /= rightCount;
+		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius);
+	}
+	//cv::imshow("Live", handBSMask);
+}
+
+bool SimpleMotionTracker::isLeftHandDetected() {
+	return _isLeftHandDetected;
+}
+
+bool SimpleMotionTracker::isRightHandDetected() {
+	return _isRightHandDetected;
+}
+
+void SimpleMotionTracker::getHandPoints(float* outArray) {
+	outArray[0] = _leftHandCircle[0];
+	outArray[1] = _leftHandCircle[1];
+	outArray[2] = _leftHandCircle[2];
+	outArray[3] = _rightHandCircle[0];
+	outArray[4] = _rightHandCircle[1];
+	outArray[5] = _rightHandCircle[2];
+}
 
 /*----------------------------------------------------------
                          DLL用API
@@ -561,6 +809,11 @@ void SMT_setUseEyeTracking(bool useEyesTracking) {
 	instance->setUseEyesTracking(useEyesTracking);
 }
 
+void SMT_setUseHandTracking(bool useHandTracking) {
+	if (instance == nullptr) return;
+	instance->setUseHandTracking(useHandTracking);
+}
+
 void SMT_setCaptureShown(bool isShown) {
 	if (instance == nullptr) return;
 	instance->setCaptureShown(isShown);
@@ -599,6 +852,36 @@ void SMT_getFacePoints(float* outArray) {
 void SMT_setIrisThresh(int thresh) {
 	if (instance == nullptr) return;
 	instance->setIrisThresh(thresh);
+}
+
+void SMT_setMinHandTranslationThreshold(int thresh) {
+	if (instance == nullptr) return;
+	instance->setMinHandTranslationThreshold(thresh);
+}
+
+void SMT_setMaxHandTranslationThreshold(int thresh) {
+	if (instance == nullptr) return;
+	instance->setMaxHandTranslationThreshold(thresh);
+}
+
+void SMT_setHandUndetectedDuration(int msec) {
+	if (instance == nullptr) return;
+	instance->setHandUndetectedDuration(msec);
+}
+
+bool SMT_isLeftHandDetected() {
+	if (instance == nullptr) return false;
+	return instance->isLeftHandDetected();
+}
+
+bool SMT_isRightHandDetected() {
+	if (instance == nullptr) return false;
+	return instance->isRightHandDetected();
+}
+
+void SMT_getHandPoints(float* outArray) {
+	if (instance == nullptr) return;
+	instance->getHandPoints(outArray);
 }
 
 void SMT_cvWait() {

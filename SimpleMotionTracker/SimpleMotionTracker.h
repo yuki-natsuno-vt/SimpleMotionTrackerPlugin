@@ -22,7 +22,8 @@ extern "C" {
 
 	SIMPLEMOTIONTRACKER_API void SMT_setUseARMarker(bool useARMarker);
 	SIMPLEMOTIONTRACKER_API void SMT_setUseFaceTracking(bool useFaceDetect);
-	SIMPLEMOTIONTRACKER_API void SMT_setUseEyeTracking(bool useFaceDetect);
+	SIMPLEMOTIONTRACKER_API void SMT_setUseEyeTracking(bool useEyeDetect);
+	SIMPLEMOTIONTRACKER_API void SMT_setUseHandTracking(bool useHandDetect);
 	SIMPLEMOTIONTRACKER_API void SMT_setCaptureShown(bool isShown);
 	SIMPLEMOTIONTRACKER_API bool SMT_isCaptureShown();
 
@@ -34,6 +35,13 @@ extern "C" {
 	SIMPLEMOTIONTRACKER_API void SMT_getFacePoints(float* outArray);
 
 	SIMPLEMOTIONTRACKER_API void SMT_setIrisThresh(int thresh);
+
+	SIMPLEMOTIONTRACKER_API void SMT_setMinHandTranslationThreshold(int thresh);
+	SIMPLEMOTIONTRACKER_API void SMT_setMaxHandTranslationThreshold(int thresh);
+	SIMPLEMOTIONTRACKER_API void SMT_setHandUndetectedDuration(int msec);
+	SIMPLEMOTIONTRACKER_API bool SMT_isLeftHandDetected();
+	SIMPLEMOTIONTRACKER_API bool SMT_isRightHandDetected();
+	SIMPLEMOTIONTRACKER_API void SMT_getHandPoints(float* outArray);
 
 	SIMPLEMOTIONTRACKER_API void SMT_cvWait();
 	SIMPLEMOTIONTRACKER_API int SMT_getErrorCode();
