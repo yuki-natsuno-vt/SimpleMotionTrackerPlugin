@@ -57,7 +57,8 @@ private:
 
 	void detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick,
 		                  const cv::Point& point, std::vector<cv::Point>& points,
-		                  float minHandRadius, float maxHandRadius);
+		                  float minHandRadius, float maxHandRadius,
+						  std::list<float>& radiusBuf);
 	void detectHand();
 
 	bool _useARMarker = false;
@@ -106,7 +107,9 @@ private:
 	int _handUndetectedDuration = 500; // ミリ秒
 	float _leftHandCircle[3];
 	float _rightHandCircle[3];
-
+	const int HAND_RADIUS_BUF_SIZE = 3;
+	std::list<float> _leftHandRadiusBuf; // 半径を遅延採用するために使う
+	std::list<float> _rightHandRadiusBuf;
 
 	int _errorCode = SMT_ERROR_NOEN;
 };
@@ -200,6 +203,12 @@ void SimpleMotionTracker::init(int cameraId) {
 	for (int i = 0; i < 3; i++) {
 		_leftHandCircle[i] = 0;
 		_rightHandCircle[i] = 0;
+	}
+	_leftHandRadiusBuf.clear();
+	_rightHandRadiusBuf.clear();
+	for (int i = 0; i < HAND_RADIUS_BUF_SIZE; i++) {
+		_leftHandRadiusBuf.push_back(0);
+		_rightHandRadiusBuf.push_back(0);
 	}
 }
 
@@ -554,7 +563,7 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[14] = _rightIrisCircle[2];
 }
 
-void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius) {
+void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf) {
 	bool isDetected = isHandDetected;
 	int currentTickCount = GetTickCount();
 	int count = points.size();
@@ -574,6 +583,11 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 	}
 	else {
 		isDetected = false;
+
+		//半径バッファをリセットして先頭の値で埋めなおす
+		float radius = radiusBuf.front();
+		radiusBuf.clear();
+		for (int i = 0; i < HAND_RADIUS_BUF_SIZE; i++) { radiusBuf.push_back(radius); };
 	}
 
 	// 半径の計算
@@ -602,6 +616,12 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 		if (ratio > 1) { ratio = 1.0f / ratio; }
 		radius *= ratio;
 
+		// 半径を遅延採用する
+		// 動体検知では検出できなくなる直前は対象を小さく判定してしまうため.
+		radiusBuf.push_back(radius);
+		radius = radiusBuf.front();
+		radiusBuf.pop_front();
+
 		if (radius < minHandRadius) {
 			radius = minHandRadius;
 		}
@@ -618,8 +638,9 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 
 		//{
 		//	static float radiusAve = 0;
-		//	radiusAve = radiusAve * 0.9 + rightRadius * 0.1;
-		//	printf("%f\n", radiusAve);
+		//	radiusAve = radiusAve * 0.9 + radius * 0.1;
+		//	printf("%f\n", radiusAve / minHandRadius);
+		//	//printf("%f\n", radius);
 		//}
 	}
 	isHandDetected = isDetected;
@@ -657,9 +678,13 @@ void SimpleMotionTracker::detectHand() {
 			_faceCircle[2] = faceRadius;
 		}
 	}
+	// 例外対策
+	if (faceRadius == 0) {
+		faceRadius = 100;
+	}
 
-	int minHandRadius = faceRadius * 0.5f;
-	int maxHandRadius = faceRadius * 1.5f;
+	int minHandRadius = (faceRadius * 0.5f); 
+	int maxHandRadius = (faceRadius * 1.5f);
 
 	// 顔を見つけられなかった場合は古い情報を拡大して使う
 	if (faceRadius == 0) {
@@ -731,16 +756,16 @@ void SimpleMotionTracker::detectHand() {
 			}
 		}
 	}
-	// 座標の平均と
+	// 座標の平均と半径を計算
 	if (leftCount > 0) {
 		leftPoint.x /= leftCount;
 		leftPoint.y /= leftCount;
-		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius);
+		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf);
 	}
 	if (rightCount > 0) {
 		rightPoint.x /= rightCount;
 		rightPoint.y /= rightCount;
-		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius);
+		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf);
 	}
 	//cv::imshow("Live", handBSMask);
 }
