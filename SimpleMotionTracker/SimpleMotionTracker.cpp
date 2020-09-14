@@ -36,8 +36,8 @@ public:
 	void getARMarker6DoF(int id, float* outArray);
 
 
-	void setMinHandTranslationThreshold(int thresh) { _minHandTranslationThreshold = thresh; }
-	void setMaxHandTranslationThreshold(int thresh) { _maxHandTranslationThreshold = thresh; }
+	void setMinHandTranslationThreshold(float thresh) { _minHandTranslationThreshold = thresh; }
+	void setMaxHandTranslationThreshold(float thresh) { _maxHandTranslationThreshold = thresh; }
 	void setHandUndetectedDuration(int msec) { _handUndetectedDuration = msec; }
 	bool isFacePointsDetected();
 	void getFacePoints(float* outArray);
@@ -98,8 +98,8 @@ private:
 	int _irisThresh = 30;
 
 	cv::Ptr<cv::BackgroundSubtractor> _backSub; // 手検出用の背景除去マスク
-	float _minHandTranslationThreshold = 0.01f;
-	float _maxHandTranslationThreshold = 0.5f;
+	float _minHandTranslationThreshold = 0.5f;
+	float _maxHandTranslationThreshold = 7.0f;
 	bool _isLeftHandDetected = false;
 	bool _isRightHandDetected = false;
 	int _leftHandUndetectedTick = 0;
@@ -195,7 +195,8 @@ void SimpleMotionTracker::init(int cameraId) {
 	}
 
 	// 手検出
-	_backSub = cv::createBackgroundSubtractorMOG2();
+	//_backSub = cv::createBackgroundSubtractorMOG2();
+	_backSub = cv::createBackgroundSubtractorKNN();
 	_isLeftHandDetected = false;
 	_isRightHandDetected = false;
 	_leftHandUndetectedTick = 0;
@@ -595,7 +596,6 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 		float radius = 0;
 		int rx = 0;
 		int ry = 0;
-
 		// Z値として使うために半径を計算
 		// 平均位置から各動体検知座標へのX,Y成分ごとの平均値も計算
 
@@ -612,9 +612,11 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 
 		// X,Y成分の比率が1から離れると、円形ではなく長方形の動体が検知されたことになる.
 		// 半径をそのまま使うと長い辺の影響を受けるので、短い辺に合わせて補正する.
-		float ratio = (float)rx / ry;
-		if (ratio > 1) { ratio = 1.0f / ratio; }
-		radius *= ratio;
+		if (rx > 0 && ry > 0) {
+			float ratio = (float)rx / ry;
+			if (ratio > 1) { ratio = 1.0f / ratio; }
+			radius *= ratio;
+		}
 
 		// 半径を遅延採用する
 		// 動体検知では検出できなくなる直前は対象を小さく判定してしまうため.
@@ -683,8 +685,8 @@ void SimpleMotionTracker::detectHand() {
 		faceRadius = 100;
 	}
 
-	int minHandRadius = (faceRadius * 0.5f); 
-	int maxHandRadius = (faceRadius * 1.5f);
+	int minHandRadius = (faceRadius * 0.25f); // 拳の大きさは顏の半分だが、動体検知平均はさらに半分になるので 1/4を設定 
+	int maxHandRadius = faceRadius;
 
 	// 顔を見つけられなかった場合は古い情報を拡大して使う
 	if (faceRadius == 0) {
@@ -693,19 +695,34 @@ void SimpleMotionTracker::detectHand() {
 		faceRadius = _faceCircle[2] * 1.5f;
 	}
 
+	int shoulderY = faceCenter.y + faceRadius; // 肩の位置推定
+
 	float resizeRatio = 1.0f;
 	cv::Mat handBSMask;
 	cv::resize(handFrameGray, handFrameGray, cv::Size(handFrameGray.cols * resizeRatio, handFrameGray.rows * resizeRatio));
 	_backSub->apply(handFrameGray, handBSMask, 0.2);
 
 	faceCenter.y -= (faceRadius / 2);
-	faceRadius *= 1.5f;
+	faceRadius *= 2.0f;
 
 	faceCenter.x *= resizeRatio;
 	faceCenter.y *= resizeRatio;
 	faceRadius *= resizeRatio;
 
 	cv::circle(handBSMask, faceCenter, faceRadius, cv::Scalar(0, 0, 0), -1);
+
+
+	//// 動体付近にマスクをかける
+	//int currentTickCount = GetTickCount();
+	//if (_isRightHandDetected || (_rightHandUndetectedTick + 500) > currentTickCount) {
+	//	cv::Mat maskR(handBSMask.rows, handBSMask.cols, CV_8UC1);
+	//	cv::rectangle(maskR, cv::Rect(0, 0, maskR.cols, maskR.rows), cv::Scalar(255, 255, 255), -1);
+	//	cv::rectangle(maskR, cv::Rect(0, 0, faceCenter.x, maskR.rows), cv::Scalar(0, 0, 0), -1);
+	//	cv::circle(maskR, cv::Point(_rightHandCircle[0], _rightHandCircle[1]), _rightHandCircle[2] * 4, cv::Scalar(255, 255, 255), -1);
+	//	cv::imshow("maskR", maskR);
+	//	cv::bitwise_and(handBSMask, maskR, handBSMask);
+	//	//cv::imshow("Live", handBSMask);
+	//}
 
 	// 検出された部分を一回り小さくする
 	{
@@ -735,8 +752,8 @@ void SimpleMotionTracker::detectHand() {
 	int leftCount = 0;
 	int rightCount = 0;
 	cv::Point leftPoint, rightPoint;
-	for (int x = 0; x < handBSMask.cols; x++) {
-		for (int y = 0; y < handBSMask.rows; y++) {
+	for (int y = 0; y < handBSMask.rows; y++) {
+		for (int x = 0; x < handBSMask.cols; x++) {
 			auto c = handBSMask.at<uchar>(y, x);
 			if (c > 0) {
 				if (x > faceCenter.x) { // 画面右側（左手）
@@ -758,14 +775,32 @@ void SimpleMotionTracker::detectHand() {
 	}
 	// 座標の平均と半径を計算
 	if (leftCount > 0) {
-		leftPoint.x /= leftCount;
-		leftPoint.y /= leftCount;
+		if (leftPoints[0].y + _leftHandCircle[2] > shoulderY) {
+			leftPoint.x /= leftCount;
+			leftPoint.y /= leftCount;
+		}
+		else {
+			leftPoint = leftPoints[0];
+			leftPoint.y += +_leftHandCircle[2];
+		}
 		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf);
 	}
+	else {
+		_isLeftHandDetected = false;
+	}
 	if (rightCount > 0) {
-		rightPoint.x /= rightCount;
-		rightPoint.y /= rightCount;
+		if (rightPoints[0].y + _rightHandCircle[2] > shoulderY) {
+			rightPoint.x /= rightCount;
+			rightPoint.y /= rightCount;
+		}
+		else {
+			rightPoint = rightPoints[0];
+			rightPoint.y += +_rightHandCircle[2];
+		}
 		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf);
+	}
+	else {
+		_isRightHandDetected = false;
 	}
 	//cv::imshow("Live", handBSMask);
 }
@@ -879,12 +914,12 @@ void SMT_setIrisThresh(int thresh) {
 	instance->setIrisThresh(thresh);
 }
 
-void SMT_setMinHandTranslationThreshold(int thresh) {
+void SMT_setMinHandTranslationThreshold(float thresh) {
 	if (instance == nullptr) return;
 	instance->setMinHandTranslationThreshold(thresh);
 }
 
-void SMT_setMaxHandTranslationThreshold(int thresh) {
+void SMT_setMaxHandTranslationThreshold(float thresh) {
 	if (instance == nullptr) return;
 	instance->setMaxHandTranslationThreshold(thresh);
 }

@@ -36,8 +36,8 @@ extern "C" {
 
 	SIMPLEMOTIONTRACKER_API void SMT_setIrisThresh(int thresh);
 
-	SIMPLEMOTIONTRACKER_API void SMT_setMinHandTranslationThreshold(int thresh);
-	SIMPLEMOTIONTRACKER_API void SMT_setMaxHandTranslationThreshold(int thresh);
+	SIMPLEMOTIONTRACKER_API void SMT_setMinHandTranslationThreshold(float thresh);
+	SIMPLEMOTIONTRACKER_API void SMT_setMaxHandTranslationThreshold(float thresh);
 	SIMPLEMOTIONTRACKER_API void SMT_setHandUndetectedDuration(int msec);
 	SIMPLEMOTIONTRACKER_API bool SMT_isLeftHandDetected();
 	SIMPLEMOTIONTRACKER_API bool SMT_isRightHandDetected();
