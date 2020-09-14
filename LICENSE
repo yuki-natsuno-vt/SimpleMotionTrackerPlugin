@@ -7,8 +7,8 @@
 
 -目次
 --3rd party license
----OpenCV
----OpenCV Contrib ArUco
+---OpenCV 4.4.0
+---OpenCV Contrib 4.4.0 ArUco
 ---OpenCVDeviceEnumerator
 --Simple Motion Tracker Plugin License
 
