@@ -58,7 +58,7 @@ private:
 	void detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick,
 		                  const cv::Point& point, std::vector<cv::Point>& points,
 		                  float minHandRadius, float maxHandRadius,
-						  std::list<float>& radiusBuf);
+						  std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame);
 	void detectHand();
 
 	bool _useARMarker = false;
@@ -98,8 +98,8 @@ private:
 	int _irisThresh = 30;
 
 	cv::Ptr<cv::BackgroundSubtractor> _backSub; // 手検出用の背景除去マスク
-	float _minHandTranslationThreshold = 0.5f;
-	float _maxHandTranslationThreshold = 7.0f;
+	float _minHandTranslationThreshold = 0.05f;
+	float _maxHandTranslationThreshold = 3.0f;
 	bool _isLeftHandDetected = false;
 	bool _isRightHandDetected = false;
 	int _leftHandUndetectedTick = 0;
@@ -564,7 +564,7 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[14] = _rightIrisCircle[2];
 }
 
-void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf) {
+void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame) {
 	bool isDetected = isHandDetected;
 	int currentTickCount = GetTickCount();
 	int count = points.size();
@@ -578,6 +578,7 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 			thresholdRatio = _maxHandTranslationThreshold;
 		}
 	}
+	thresholdRatio = thresholdRatio * resizeRatio * resizeRatio;
 	int translationThrashold = (minHandRadius * minHandRadius * 3.14f) * thresholdRatio;
 	if (count > translationThrashold) {
 		isDetected = true;
@@ -695,21 +696,40 @@ void SimpleMotionTracker::detectHand() {
 		faceRadius = _faceCircle[2] * 1.5f;
 	}
 
-	int shoulderY = faceCenter.y + faceRadius; // 肩の位置推定
+	int shoulderY = faceCenter.y + (faceRadius * 1.5f); // 肩の位置推定
 
-	float resizeRatio = 1.0f;
+	float resizeRatio = 0.5f;
 	cv::Mat handBSMask;
 	cv::resize(handFrameGray, handFrameGray, cv::Size(handFrameGray.cols * resizeRatio, handFrameGray.rows * resizeRatio));
-	_backSub->apply(handFrameGray, handBSMask, 0.2);
+	_backSub->apply(handFrameGray, handBSMask, 0.999);
 
 	faceCenter.y -= (faceRadius / 2);
-	faceRadius *= 2.0f;
+	faceRadius *= 1.5f;
 
 	faceCenter.x *= resizeRatio;
 	faceCenter.y *= resizeRatio;
 	faceRadius *= resizeRatio;
 
 	cv::circle(handBSMask, faceCenter, faceRadius, cv::Scalar(0, 0, 0), -1);
+
+	// 手前の数フレーム分も塗りつぶす
+	static float prevFCx[3] = { 0 };
+	static float prevFCy[3] = { 0 };
+	static float prevFCr[3] = { 0 };
+	for (int i = 0; i < 3; i++) {
+		cv::circle(handBSMask, cv::Point(prevFCx[i], prevFCy[i]), prevFCr[i], cv::Scalar(0, 0, 0), -1);
+	}
+	for (int i = 3 - 1; i > 0; i--) {
+		prevFCx[i] = prevFCx[i-1];
+		prevFCy[i] = prevFCy[i-1];
+		prevFCr[i] = prevFCr[i-1];
+	}
+	prevFCy[0] = faceCenter.y;
+	prevFCx[0] = faceCenter.x;
+	prevFCr[0] = faceRadius;
+
+	// 首のあたりも黒でつぶす
+	//cv::circle(handBSMask, cv::Point(faceCenter.x, faceCenter.y + faceRadius), faceRadius * 0.75f, cv::Scalar(0, 0, 0), -1);
 
 
 	//// 動体付近にマスクをかける
@@ -783,7 +803,7 @@ void SimpleMotionTracker::detectHand() {
 			leftPoint = leftPoints[0];
 			leftPoint.y += +_leftHandCircle[2];
 		}
-		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf);
+		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf, resizeRatio, handBSMask);
 	}
 	else {
 		_isLeftHandDetected = false;
@@ -797,7 +817,7 @@ void SimpleMotionTracker::detectHand() {
 			rightPoint = rightPoints[0];
 			rightPoint.y += +_rightHandCircle[2];
 		}
-		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf);
+		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf, resizeRatio, handBSMask);
 	}
 	else {
 		_isRightHandDetected = false;
