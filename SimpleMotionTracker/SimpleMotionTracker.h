@@ -41,6 +41,8 @@ extern "C" {
 	SIMPLEMOTIONTRACKER_API void SMT_setHandUndetectedDuration(int msec);
 	SIMPLEMOTIONTRACKER_API bool SMT_isLeftHandDetected();
 	SIMPLEMOTIONTRACKER_API bool SMT_isRightHandDetected();
+	SIMPLEMOTIONTRACKER_API bool SMT_isLeftHandDown();
+	SIMPLEMOTIONTRACKER_API bool SMT_isRightHandDown();
 	SIMPLEMOTIONTRACKER_API void SMT_getHandPoints(float* outArray);
 
 	SIMPLEMOTIONTRACKER_API void SMT_cvWait();

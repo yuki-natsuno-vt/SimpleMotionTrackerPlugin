@@ -44,6 +44,8 @@ public:
 
 	bool isLeftHandDetected();
 	bool isRightHandDetected();
+	bool isLeftHandDown();
+	bool isRightHandDown();
 	void getHandPoints(float* outArray);
 
 	int getErrorCode();
@@ -55,7 +57,7 @@ private:
 	void detectFace();
 	void detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
 
-	void detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick,
+	void detectHandCircle(float* handCircle, bool& isHandDetected, bool& isHandDown,  int& handUndetectedTick,
 		                  const cv::Point& point, std::vector<cv::Point>& points,
 		                  float minHandRadius, float maxHandRadius,
 						  std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame);
@@ -98,10 +100,12 @@ private:
 	int _irisThresh = 30;
 
 	cv::Ptr<cv::BackgroundSubtractor> _backSub; // 手検出用の背景除去マスク
-	float _minHandTranslationThreshold = 0.05f;
+	float _minHandTranslationThreshold = 0.01f;
 	float _maxHandTranslationThreshold = 3.0f;
 	bool _isLeftHandDetected = false;
 	bool _isRightHandDetected = false;
+	bool _isLeftHandDown = false;
+	bool _isRightHandDown = false;
 	int _leftHandUndetectedTick = 0;
 	int _rightHandUndetectedTick = 0;
 	int _handUndetectedDuration = 500; // ミリ秒
@@ -564,7 +568,7 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[14] = _rightIrisCircle[2];
 }
 
-void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame) {
+void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, bool& isHandDown, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame) {
 	bool isDetected = isHandDetected;
 	int currentTickCount = GetTickCount();
 	int count = points.size();
@@ -636,6 +640,8 @@ void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetect
 		handCircle[1] = point.y;
 		handCircle[2] = radius;
 		handUndetectedTick = currentTickCount;
+
+		isHandDown = false;
 
 		cv::circle(_outputFrame, point, radius, cv::Scalar(0, 255, 0), 2);
 
@@ -803,10 +809,15 @@ void SimpleMotionTracker::detectHand() {
 			leftPoint = leftPoints[0];
 			leftPoint.y += +_leftHandCircle[2];
 		}
-		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf, resizeRatio, handBSMask);
+		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _isLeftHandDown, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf, resizeRatio, handBSMask);
 	}
 	else {
 		_isLeftHandDetected = false;
+		// 非検知状態 かつ 画面下部で見失っているときは手を下げたと判定
+		if (_leftHandCircle[1] + _leftHandCircle[2] >= handFrame.rows) {
+			_isLeftHandDown = true;
+			//cv::rectangle(_outputFrame, cv::Rect(0, 0, 30, 30), cv::Scalar(0, 0, 255), -1); // 判定確認用
+		}
 	}
 	if (rightCount > 0) {
 		if (rightPoints[0].y + _rightHandCircle[2] > shoulderY) {
@@ -817,10 +828,14 @@ void SimpleMotionTracker::detectHand() {
 			rightPoint = rightPoints[0];
 			rightPoint.y += +_rightHandCircle[2];
 		}
-		detectHandCircle(_rightHandCircle, _isRightHandDetected, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf, resizeRatio, handBSMask);
+		detectHandCircle(_rightHandCircle, _isRightHandDetected, _isRightHandDown, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf, resizeRatio, handBSMask);
 	}
 	else {
 		_isRightHandDetected = false;
+		// 非検知状態 かつ 画面下部で見失っているときは手を下げたと判定
+		if (_rightHandCircle[1] + _rightHandCircle[2] >= handFrame.rows) {
+			_isRightHandDown = true;
+		}
 	}
 	//cv::imshow("Live", handBSMask);
 }
@@ -831,6 +846,14 @@ bool SimpleMotionTracker::isLeftHandDetected() {
 
 bool SimpleMotionTracker::isRightHandDetected() {
 	return _isRightHandDetected;
+}
+
+bool SimpleMotionTracker::isLeftHandDown() {
+	return _isLeftHandDown;
+}
+
+bool SimpleMotionTracker::isRightHandDown() {
+	return _isRightHandDown;
 }
 
 void SimpleMotionTracker::getHandPoints(float* outArray) {
@@ -957,6 +980,16 @@ bool SMT_isLeftHandDetected() {
 bool SMT_isRightHandDetected() {
 	if (instance == nullptr) return false;
 	return instance->isRightHandDetected();
+}
+
+bool SMT_isLeftHandDown() {
+	if (instance == nullptr) return false;
+	return instance->isLeftHandDown();
+}
+
+bool SMT_isRightHandDown() {
+	if (instance == nullptr) return false;
+	return instance->isRightHandDown();
 }
 
 void SMT_getHandPoints(float* outArray) {
