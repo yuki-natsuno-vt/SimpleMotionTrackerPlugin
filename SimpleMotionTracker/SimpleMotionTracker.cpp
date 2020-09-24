@@ -108,7 +108,7 @@ private:
 	bool _isRightHandDown = false;
 	int _leftHandUndetectedTick = 0;
 	int _rightHandUndetectedTick = 0;
-	int _handUndetectedDuration = 500; // ミリ秒
+	int _handUndetectedDuration = 5000; // ミリ秒
 	float _leftHandCircle[3];
 	float _rightHandCircle[3];
 	const int HAND_RADIUS_BUF_SIZE = 3;
@@ -424,10 +424,10 @@ void SimpleMotionTracker::detectFace() {
 		cv::Rect rightIris;
 
 		for (auto f : faces) {
-			f.x *= 5;
-			f.y *= 5;
-			f.width *= 5;
-			f.height *= 5;
+			f.x /= resizeRate;
+			f.y /= resizeRate;
+			f.width /= resizeRate;
+			f.height /= resizeRate;
 			if (f.width <= face.width) {
 				continue;
 			}
@@ -816,6 +816,7 @@ void SimpleMotionTracker::detectHand() {
 		// 非検知状態 かつ 画面下部で見失っているときは手を下げたと判定
 		if (_leftHandCircle[1] + _leftHandCircle[2] >= handFrame.rows) {
 			_isLeftHandDown = true;
+			if (_leftHandUndetectedTick > _handUndetectedDuration) { _leftHandUndetectedTick -= _handUndetectedDuration; }
 			//cv::rectangle(_outputFrame, cv::Rect(0, 0, 30, 30), cv::Scalar(0, 0, 255), -1); // 判定確認用
 		}
 	}
@@ -835,6 +836,7 @@ void SimpleMotionTracker::detectHand() {
 		// 非検知状態 かつ 画面下部で見失っているときは手を下げたと判定
 		if (_rightHandCircle[1] + _rightHandCircle[2] >= handFrame.rows) {
 			_isRightHandDown = true;
+			if (_rightHandUndetectedTick > _handUndetectedDuration) { _rightHandUndetectedTick -= _handUndetectedDuration; }
 		}
 	}
 	//cv::imshow("Live", handBSMask);
