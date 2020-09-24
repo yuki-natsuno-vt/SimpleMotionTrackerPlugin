@@ -807,7 +807,7 @@ void SimpleMotionTracker::detectHand() {
 		}
 		else {
 			leftPoint = leftPoints[0];
-			leftPoint.y += +_leftHandCircle[2];
+			//leftPoint.y += +_leftHandCircle[2];
 		}
 		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _isLeftHandDown, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf, resizeRatio, handBSMask);
 	}
@@ -827,7 +827,7 @@ void SimpleMotionTracker::detectHand() {
 		}
 		else {
 			rightPoint = rightPoints[0];
-			rightPoint.y += +_rightHandCircle[2];
+			//rightPoint.y += +_rightHandCircle[2];
 		}
 		detectHandCircle(_rightHandCircle, _isRightHandDetected, _isRightHandDown, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf, resizeRatio, handBSMask);
 	}
