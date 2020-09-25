@@ -703,6 +703,7 @@ void SimpleMotionTracker::detectHand() {
 	}
 
 	int shoulderY = faceCenter.y + (faceRadius * 1.5f); // 肩の位置推定
+	int handShutterMaskMargin = faceRadius * 2;
 
 	float resizeRatio = 0.5f;
 	cv::Mat handBSMask;
@@ -737,18 +738,27 @@ void SimpleMotionTracker::detectHand() {
 	// 首のあたりも黒でつぶす
 	//cv::circle(handBSMask, cv::Point(faceCenter.x, faceCenter.y + faceRadius), faceRadius * 0.75f, cv::Scalar(0, 0, 0), -1);
 
-
-	//// 動体付近にマスクをかける
-	//int currentTickCount = GetTickCount();
-	//if (_isRightHandDetected || (_rightHandUndetectedTick + 500) > currentTickCount) {
-	//	cv::Mat maskR(handBSMask.rows, handBSMask.cols, CV_8UC1);
-	//	cv::rectangle(maskR, cv::Rect(0, 0, maskR.cols, maskR.rows), cv::Scalar(255, 255, 255), -1);
-	//	cv::rectangle(maskR, cv::Rect(0, 0, faceCenter.x, maskR.rows), cv::Scalar(0, 0, 0), -1);
-	//	cv::circle(maskR, cv::Point(_rightHandCircle[0], _rightHandCircle[1]), _rightHandCircle[2] * 4, cv::Scalar(255, 255, 255), -1);
-	//	cv::imshow("maskR", maskR);
-	//	cv::bitwise_and(handBSMask, maskR, handBSMask);
-	//	//cv::imshow("Live", handBSMask);
-	//}
+	// 前回の手の位置＋顔の直系より下は塗りつぶす
+	if (_isRightHandDetected) {
+		cv::Rect rightHandUnderMask;
+		rightHandUnderMask.x = 0;
+		rightHandUnderMask.y = (_rightHandCircle[1] + handShutterMaskMargin) * resizeRatio;
+		if (rightHandUnderMask.y >= handBSMask.rows) { rightHandUnderMask.y = handBSMask.rows - 2; }
+		rightHandUnderMask.width = faceCenter.x;
+		rightHandUnderMask.height = handBSMask.rows - rightHandUnderMask.y;
+		cv::rectangle(handBSMask, rightHandUnderMask, cv::Scalar(0, 0, 0), -1);
+		//cv::rectangle(_outputFrame, rightHandUnderMask, cv::Scalar(0, 0, 0), -1);
+	}
+	if (_isLeftHandDetected) {
+		cv::Rect leftHandUnderMask;
+		leftHandUnderMask.x = faceCenter.x;
+		leftHandUnderMask.y = (_leftHandCircle[1] + handShutterMaskMargin) * resizeRatio;
+		if (leftHandUnderMask.y >= handBSMask.rows) { leftHandUnderMask.y = handBSMask.rows - 2; }
+		leftHandUnderMask.width = handBSMask.cols - leftHandUnderMask.x;
+		leftHandUnderMask.height = handBSMask.rows - leftHandUnderMask.y;
+		cv::rectangle(handBSMask, leftHandUnderMask, cv::Scalar(0, 0, 0), -1);
+		//cv::rectangle(_outputFrame, leftHandUnderMask, cv::Scalar(0, 0, 0), -1);
+	}
 
 	// 検出された部分を一回り小さくする
 	{
