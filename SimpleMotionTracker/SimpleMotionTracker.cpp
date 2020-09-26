@@ -52,8 +52,10 @@ public:
 
 private:
 	void loadCameraParam(const std::string& fileName);
+	static cv::Rect adjustRect(const cv::Rect& rect, const cv::Mat frame);
 	void detectARMarker();
 
+	static void detectMultiScaleRecursive(cv::CascadeClassifier& cascade, cv::Mat& frame, std::vector<cv::Rect>& outRects, cv::Size min, cv::Size max, int depth);
 	void detectFace();
 	void detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
 
@@ -288,6 +290,27 @@ void SimpleMotionTracker::loadCameraParam(const std::string& fileName) {
 	fs.release();
 }
 
+cv::Rect SimpleMotionTracker::adjustRect(const cv::Rect& rect, const cv::Mat frame) {
+	cv::Rect ret = rect;
+	if (ret.x < 0) {
+		ret.width += ret.x;
+		ret.x = 0;
+	}
+	if (ret.y < 0) {
+		ret.height += ret.y;
+		ret.y = 0;
+	}
+	if (ret.x + ret.width >= frame.cols) {
+		int remainder = (ret.x + ret.width) - frame.cols;
+		ret.width -= remainder;
+	}
+	if (ret.y + ret.height >= frame.rows) {
+		int remainder = (ret.y + ret.height) - frame.rows;
+		ret.height -= remainder;
+	}
+	return ret;
+}
+
 void SimpleMotionTracker::detectARMarker() {
 	for (int i = 0; i < 50; i++) {
 		_markerIdDetected[i] = false; // 非検出状態へ
@@ -395,15 +418,78 @@ void SimpleMotionTracker::detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect
 	}
 }
 
+void SimpleMotionTracker::detectMultiScaleRecursive(cv::CascadeClassifier& cascade, cv::Mat& frame, std::vector<cv::Rect>& outRects, cv::Size min, cv::Size max, int depth) {
+	if (depth == 0) return;
+
+	std::vector<cv::Rect> rects;
+	cascade.detectMultiScale(frame, rects, 1.1, 3, 0, min, max);
+	if (rects.size() > 0) {
+		auto rect = rects[0];
+		cv::Rect scaledRect = rect;
+		float scale = 1.1f;
+		scaledRect.width *= scale;
+		scaledRect.height *= scale;
+		scaledRect.x -= (scaledRect.width - rect.width) / 2;
+		scaledRect.y -= (scaledRect.height - rect.height) / 2;
+		scaledRect = adjustRect(scaledRect, frame);
+		cv::Mat roi = frame(scaledRect);
+
+		min.width = rect.width * 0.9f;
+		min.height = rect.height * 0.9f;
+		max.width = scaledRect.width;
+		max.height = scaledRect.height;
+		// 再帰的に処理
+		detectMultiScaleRecursive(cascade, roi, outRects, min, max, depth - 1);
+		if (outRects.size() == 0) {
+			outRects.push_back(rect);
+		}
+		else {
+			outRects[0].x += scaledRect.x;
+			outRects[0].y += scaledRect.y;
+		}
+	}
+}
+
 void SimpleMotionTracker::detectFace() {
+	bool prevIsFacePointsDetected = _isFacePointsDetected;
 	_isFacePointsDetected = false;
 
+	// 不可対策で検索範囲を絞る
+	int minEdgeLen = (_faceCircle[2] * 2) * 0.9f; // 前回の1割りを最小サイズとする
+	cv::Size minSize(minEdgeLen, minEdgeLen);
+
+	float targetScale = 1.2f;
+	cv::Rect targetRect(_faceCircle[0] - (_faceCircle[2] * targetScale), // 前回の少し大きめを対象とする 
+		                _faceCircle[1] - (_faceCircle[2] * targetScale),
+					    (_faceCircle[2] * targetScale) * 2,
+						(_faceCircle[2] * targetScale) * 2);
+	targetRect = adjustRect(targetRect, _capFrame);
+	cv::Size maxSize(targetRect.width, targetRect.height);
+
+
+	float resizeRate = 0.2f;
+
 	cv::Mat frameGray;
-	cv::cvtColor(_capFrame, frameGray, cv::COLOR_BGR2GRAY);
+	if (prevIsFacePointsDetected) {
+		frameGray = _capFrame(targetRect);
+		resizeRate *= _capFrame.rows / (_faceCircle[2] * 2); // 前回を元に縮小率を調整
+		if (resizeRate > 1) { resizeRate = 1; }
+		minSize.width *= resizeRate;
+		minSize.height *= resizeRate;
+		maxSize.width *= resizeRate;
+		maxSize.height *= resizeRate;
+	}
+	else {
+		frameGray = _capFrame.clone();
+		minSize.width = 0;
+		minSize.height = 0;
+		maxSize.width = 0;
+		maxSize.height = 0;
+	}
+	cv::cvtColor(frameGray, frameGray, cv::COLOR_BGR2GRAY);
 
 	// 顏検出用に縮小画像で負荷軽減.
 	cv::Mat faceDetectFrame;
-	const float resizeRate = 0.2f;
 	cv::resize(frameGray, faceDetectFrame, cv::Size(frameGray.cols * resizeRate, (frameGray.rows * resizeRate)));
 	cv::equalizeHist(faceDetectFrame, faceDetectFrame);
 
@@ -415,7 +501,11 @@ void SimpleMotionTracker::detectFace() {
 		cv::warpAffine(faceDetectFrame, rotatedFaceDetectFrame, trans, cv::Size(faceDetectFrame.cols, faceDetectFrame.rows));
 
 		std::vector<cv::Rect> faces; // 複数検出を考慮.
-		_faceCascade.detectMultiScale(rotatedFaceDetectFrame, faces);
+		//_faceCascade.detectMultiScale(rotatedFaceDetectFrame, faces, 1.1, 3, 0, minSize, maxSize);
+
+		// 多段検出で精度を上げる
+		int _faceDetectionLevel = 3;
+		detectMultiScaleRecursive(_faceCascade, rotatedFaceDetectFrame, faces, minSize, maxSize, _faceDetectionLevel);
 
 		cv::Rect face;
 		cv::Rect leftEye;
@@ -437,12 +527,15 @@ void SimpleMotionTracker::detectFace() {
 			auto trans = cv::getRotationMatrix2D(cv::Point2f(frameGray.cols / 2, frameGray.rows / 2), angle, 1.0f);
 			cv::warpAffine(frameGray, frameGray, trans, cv::Size(frameGray.cols, frameGray.rows));
 			cv::Rect upperFace(f);
-			upperFace.height /= 4;
-			upperFace.y += upperFace.height;
+			int splitHeight = upperFace.height / 4;
+			upperFace.height = splitHeight * 1.5f;
+			upperFace.y += splitHeight;
 			cv::Mat faceFrame = frameGray(upperFace).clone();
+			cv::circle(faceFrame, cv::Point(faceFrame.cols / 2, faceFrame.rows), faceFrame.rows / 4, cv::Scalar(255, 255, 255), -1); // 鼻の孔隠し
 			cv::equalizeHist(faceFrame, faceFrame);
 			std::vector<cv::Rect> eyes;
 			_eyesCascade.detectMultiScale(faceFrame, eyes);
+			//cv::imshow("test", faceFrame);
 
 			// 左右の目に振り分け.
 			for (auto eye : eyes) {
@@ -457,6 +550,25 @@ void SimpleMotionTracker::detectFace() {
 					}
 				}
 			}
+			// 検出できなかった時はそれっぽい場所を指定する
+			auto adjustEyeRect = [faceFrame](cv::Rect& rect, int block) {
+				int w = faceFrame.cols / 10;
+				int h = faceFrame.rows / 10;
+				rect.x = w * block;
+				rect.y = h * 2;
+				rect.width = w * 2;
+				rect.height = h * 8;
+				if (rect.height == 0) {
+					rect.y = 0;
+					rect.height = faceFrame.rows;
+				}
+			};
+			if (leftEye.width == 0) {
+				adjustEyeRect(leftEye, 6);
+			}
+			if (rightEye.width == 0) {
+				adjustEyeRect(rightEye, 2);
+			}
 			detectedAngle = angle;
 
 			// 虹彩検出
@@ -469,10 +581,11 @@ void SimpleMotionTracker::detectFace() {
 					detectIris(_irisThresh, faceFrame, rightEye, rightIris);
 				}
 			}
-		}
 
+			break; // 検出は1つだけ前提で抜ける.
+		}
 		if (face.width > 0) {
-			cv::Mat_<double> trans = cv::getRotationMatrix2D(cv::Point2f(0,0), -detectedAngle, 1.0f);
+			cv::Mat_<double> trans = cv::getRotationMatrix2D(cv::Point2f(0, 0), -detectedAngle, 1.0f);
 			cv::Point2f frameCenter(frameGray.cols / 2, frameGray.rows / 2);
 
 			auto afinTransform = [=](const cv::Rect& rect) {
@@ -481,6 +594,10 @@ void SimpleMotionTracker::detectFace() {
 				float y = center.y - frameCenter.y;
 				float x2 = frameCenter.x + (trans(0, 0) * x + trans(0, 1) * y);
 				float y2 = frameCenter.y + (trans(1, 0) * x + trans(1, 1) * y);
+				if (prevIsFacePointsDetected) {
+					x2 += targetRect.x;
+					y2 += targetRect.y;
+				}
 				return cv::Point2f(x2, y2);
 			};
 
