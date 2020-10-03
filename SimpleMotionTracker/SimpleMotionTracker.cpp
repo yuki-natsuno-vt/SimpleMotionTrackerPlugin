@@ -101,7 +101,7 @@ private:
 
 	int _irisThresh = 30;
 
-	cv::Ptr<cv::BackgroundSubtractor> _backSub; // 手検出用の背景除去マスク
+	cv::Ptr<cv::BackgroundSubtractor> _handBackSub; // 手検出用の背景除去マスク
 	float _minHandTranslationThreshold = 0.05f;
 	float _maxHandTranslationThreshold = 3.0f;
 	bool _isLeftHandDetected = false;
@@ -201,8 +201,8 @@ void SimpleMotionTracker::init(int cameraId) {
 	}
 
 	// 手検出
-	//_backSub = cv::createBackgroundSubtractorMOG2();
-	_backSub = cv::createBackgroundSubtractorKNN();
+	//_handBackSub = cv::createBackgroundSubtractorMOG2();
+	_handBackSub = cv::createBackgroundSubtractorKNN();
 	_isLeftHandDetected = false;
 	_isRightHandDetected = false;
 	_leftHandUndetectedTick = 0;
@@ -819,13 +819,14 @@ void SimpleMotionTracker::detectHand() {
 		faceRadius = _faceCircle[2] * 1.5f;
 	}
 
+	int originalFaceRadius = faceRadius;
 	int shoulderY = faceCenter.y + (faceRadius * 1.5f); // 肩の位置推定
 	int handShutterMaskMargin = faceRadius * 2;
 
 	float resizeRatio = 0.5f;
 	cv::Mat handBSMask;
 	cv::resize(handFrameGray, handFrameGray, cv::Size(handFrameGray.cols * resizeRatio, handFrameGray.rows * resizeRatio));
-	_backSub->apply(handFrameGray, handBSMask, 0.999);
+	_handBackSub->apply(handFrameGray, handBSMask, 0.999);
 
 	faceCenter.y -= (faceRadius / 2);
 	faceRadius *= 1.5f;
@@ -835,7 +836,7 @@ void SimpleMotionTracker::detectHand() {
 	faceRadius *= resizeRatio;
 
 	cv::circle(handBSMask, faceCenter, faceRadius, cv::Scalar(0, 0, 0), -1);
-	cv::circle(handBSMask, cv::Point(faceCenter.x, faceCenter.y + faceRadius), faceRadius, cv::Scalar(0, 0, 0), -1);
+	cv::circle(handBSMask, cv::Point(faceCenter.x, faceCenter.y + faceRadius), faceRadius * 0.5f, cv::Scalar(0, 0, 0), -1);
 
 	// 手前の数フレーム分も塗りつぶす
 	static float prevFCx[3] = { 0 };
@@ -844,7 +845,7 @@ void SimpleMotionTracker::detectHand() {
 
 	for (int i = 0; i < 3; i++) {
 		cv::circle(handBSMask, cv::Point(prevFCx[i], prevFCy[i]), prevFCr[i], cv::Scalar(0, 0, 0), -1);
-		cv::circle(handBSMask, cv::Point(prevFCx[i], prevFCy[i] + prevFCr[i]), prevFCr[i], cv::Scalar(0, 0, 0), -1);
+		cv::circle(handBSMask, cv::Point(prevFCx[i], prevFCy[i] + prevFCr[i]), prevFCr[i] * 0.5f, cv::Scalar(0, 0, 0), -1);
 	}
 	for (int i = 3 - 1; i > 0; i--) {
 		prevFCx[i] = prevFCx[i-1];
@@ -855,7 +856,7 @@ void SimpleMotionTracker::detectHand() {
 	prevFCy[0] = faceCenter.y;
 	prevFCr[0] = faceRadius;
 
-	// 頭の移動量が多い場合処理を中止
+	// 頭の移動量が多い場合、胸周辺を塗りつぶして検知されないようにする
 	if (true) {
 		float vx = prevFCx[0] - prevFCx[2];
 		float vy = prevFCy[0] - prevFCy[2];
@@ -863,10 +864,12 @@ void SimpleMotionTracker::detectHand() {
 		float len = std::sqrtf((vx * vx) + (vy * vy));
 		float ratio = len / r;
 
-		if (ratio > 0.1f) {
-			cv::circle(handBSMask, cv::Point(prevFCx[0], prevFCy[0] + prevFCr[0] * 2), prevFCr[0], cv::Scalar(0, 0, 0), -1);
-			cv::circle(handBSMask, cv::Point(prevFCx[0] - len * 4, prevFCy[0] + prevFCr[0] * 2), prevFCr[0], cv::Scalar(0, 0, 0), -1);
-			cv::circle(handBSMask, cv::Point(prevFCx[0] + len * 4, prevFCy[0] + prevFCr[0] * 2), prevFCr[0], cv::Scalar(0, 0, 0), -1);
+		if (ratio > 0.1f) {	
+			cv::Point center(prevFCx[0], prevFCy[0]);
+			int height = handBSMask.rows - center.y;
+			int halfWidth = prevFCr[0] + (len * 5);
+			cv::Rect bodyRect(center.x - halfWidth, center.y, halfWidth * 2, height);
+			cv::rectangle(handBSMask, bodyRect, cv::Scalar(0), -1);
 		}
 	}
 
@@ -879,7 +882,7 @@ void SimpleMotionTracker::detectHand() {
 		rightHandUnderMask.width = faceCenter.x;
 		rightHandUnderMask.height = handBSMask.rows - rightHandUnderMask.y;
 		cv::rectangle(handBSMask, rightHandUnderMask, cv::Scalar(0, 0, 0), -1);
-		//cv::rectangle(_outputFrame, rightHandUnderMask, cv::Scalar(0, 0, 0), -1);
+		//cv::rectangle(_outputFrame, rightHandUnderMask, cv::Scalar(0, 0, 0), -1); // 位置確認用
 	}
 	if (_isLeftHandDetected) {
 		cv::Rect leftHandUnderMask;
@@ -889,7 +892,7 @@ void SimpleMotionTracker::detectHand() {
 		leftHandUnderMask.width = handBSMask.cols - leftHandUnderMask.x;
 		leftHandUnderMask.height = handBSMask.rows - leftHandUnderMask.y;
 		cv::rectangle(handBSMask, leftHandUnderMask, cv::Scalar(0, 0, 0), -1);
-		//cv::rectangle(_outputFrame, leftHandUnderMask, cv::Scalar(0, 0, 0), -1);
+		//cv::rectangle(_outputFrame, leftHandUnderMask, cv::Scalar(0, 0, 0), -1); // 位置確認用
 	}
 
 	// 検出された部分を一回り小さくする
@@ -949,7 +952,7 @@ void SimpleMotionTracker::detectHand() {
 		}
 		else {
 			leftPoint.x /= leftCount;
-			leftPoint.y = leftPoints[0].y;
+			leftPoint.y = leftPoints[0].y + (originalFaceRadius / 2);
 			//leftPoint.y += +_leftHandCircle[2];
 		}
 		detectHandCircle(_leftHandCircle, _isLeftHandDetected, _isLeftHandDown, _leftHandUndetectedTick, leftPoint, leftPoints, minHandRadius, maxHandRadius, _leftHandRadiusBuf, resizeRatio, handBSMask);
@@ -970,7 +973,7 @@ void SimpleMotionTracker::detectHand() {
 		}
 		else {
 			rightPoint.x /= rightCount;
-			rightPoint.y = rightPoints[0].y;
+			rightPoint.y = rightPoints[0].y + (originalFaceRadius / 2);
 			//rightPoint.y += +_rightHandCircle[2];
 		}
 		detectHandCircle(_rightHandCircle, _isRightHandDetected, _isRightHandDown, _rightHandUndetectedTick, rightPoint, rightPoints, minHandRadius, maxHandRadius, _rightHandRadiusBuf, resizeRatio, handBSMask);
