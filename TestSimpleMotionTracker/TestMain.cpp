@@ -9,6 +9,8 @@ int main() {
 	SMT_setARMarkerEdgeLength(0.036f);
 	SMT_setUseFaceTracking(true);
 	SMT_setUseEyeTracking(true);
+	SMT_setUseHandTracking(true);
+	SMT_setHandUndetectedDuration(5000);
 	while (1) {
 		SMT_update();
 
