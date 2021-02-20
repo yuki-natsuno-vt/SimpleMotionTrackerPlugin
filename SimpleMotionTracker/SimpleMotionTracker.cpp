@@ -13,11 +13,20 @@
 #include <chrono>
 #include "OpenCVDeviceEnumerator/DeviceEnumerator.h"
 
+#include <dlib/opencv.h>
+#include <dlib/image_processing/frontal_face_detector.h>
+#include <dlib/image_processing/render_face_detections.h>
+#include <dlib/image_processing.h>
+
+#define M_PI 3.14159265359
+#define deg_to_rad(deg) (((deg)/180)*M_PI)
+#define rad_to_deg(rad) (((rad)/M_PI)*180)
+
 class SimpleMotionTracker {
 public:
 	void initVideoDeviceList();
-	void init(const std::string& videoDeviceName);
-	void init(int cameraId);
+	void init(const std::string& videoDeviceName, const std::string& dataPath);
+	void init(int cameraId, const std::string& dataPath);
 	void destroy();
 	void update();
 
@@ -57,7 +66,9 @@ private:
 
 	static void detectMultiScaleRecursive(cv::CascadeClassifier& cascade, cv::Mat& frame, std::vector<cv::Rect>& outRects, cv::Size min, cv::Size max, int depth);
 	void detectFace();
+	void detectFaceDlib();
 	void detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
+	void detectIrisDlib(int irisThresh, cv::Mat faceFrame, cv::Rect eyeRect, cv::Rect& outIris);
 
 	void detectHandCircle(float* handCircle, bool& isHandDetected, bool& isHandDown,  int& handUndetectedTick,
 		                  const cv::Point& point, std::vector<cv::Point>& points,
@@ -92,12 +103,16 @@ private:
 	cv::CascadeClassifier _faceCascade; // 顏検出器.
 	cv::CascadeClassifier _eyesCascade; // 目検出器.
 
+	dlib::frontal_face_detector _faceDetector;
+	dlib::shape_predictor _facePredictor;
+
 	bool _isFacePointsDetected = false;
 	float _faceCircle[3]; // X,Y,半径
 	float _leftEyeCircle[3];
 	float _rightEyeCircle[3];
 	float _leftIrisCircle[3];
 	float _rightIrisCircle[3];
+	float _faceAngle[3]; // X,Y,Z
 
 	int _irisThresh = 30;
 
@@ -128,7 +143,7 @@ void SimpleMotionTracker::initVideoDeviceList() {
 	std::map<int, Device> devices = de.getVideoDevicesMap();
 }
 
-void SimpleMotionTracker::init(const std::string& videoDeviceName) {
+void SimpleMotionTracker::init(const std::string& videoDeviceName, const std::string& dataPath) {
 	int cameraId = -1;
 	DeviceEnumerator de;
 	std::map<int, Device> devices = de.getVideoDevicesMap();
@@ -138,10 +153,10 @@ void SimpleMotionTracker::init(const std::string& videoDeviceName) {
 			break;
 		}
 	}
-	init(cameraId);
+	init(cameraId, dataPath);
 }
 
-void SimpleMotionTracker::init(int cameraId) {
+void SimpleMotionTracker::init(int cameraId, const std::string& dataPath) {
 	// デバイスを開く.
 	_cap.open(cameraId);
 
@@ -166,18 +181,22 @@ void SimpleMotionTracker::init(int cameraId) {
 		return;
 	}
 
-	if (!_faceCascade.load("data/haarcascade_frontalface_alt.xml")) {
+	if (!_faceCascade.load(dataPath + "haarcascade_frontalface_alt.xml")) {
 		_errorCode = SMT_ERROR_UNOPEN_FACE_CASCADE;
 		return;
 	}
 
-	if (!_eyesCascade.load("data/haarcascade_eye.xml")) {
+	if (!_eyesCascade.load(dataPath + "haarcascade_eye.xml")) {
 		_errorCode = SMT_ERROR_UNOPEN_EYE_CASCADE;
 		return;
 	}
 
 	// カメラパラメータ読み込み.
-	loadCameraParam("data/camera_param.xml");
+	loadCameraParam(dataPath + "camera_param.xml");
+
+	// Dlib用顏検出器とランドマークを読み込み
+	_faceDetector = dlib::get_frontal_face_detector();
+	dlib::deserialize(dataPath + "sp_human_face_68_for_mobile.dat") >> _facePredictor;
 
 	// マーカー検出
 	_markerIds.clear();
@@ -198,6 +217,7 @@ void SimpleMotionTracker::init(int cameraId) {
 		_rightEyeCircle[i] = 0;
 		_leftIrisCircle[i] = 0;
 		_rightIrisCircle[i] = 0;
+		_faceAngle[i] = 0;
 	}
 
 	// 手検出
@@ -235,7 +255,8 @@ void SimpleMotionTracker::update() {
 			detectARMarker();
 		}
 		if (_useFaceTracking || _useEyesTracking) {
-			detectFace();
+			//detectFace();
+			detectFaceDlib();
 		}
 		if (_useHandTracking) {
 			detectHand();
@@ -378,6 +399,48 @@ void SimpleMotionTracker::detectIris(int irisThresh, cv::Mat faceFrame, cv::Rect
 		auto eyeFrame = faceFrame(eyeRect);
 		cv::equalizeHist(eyeFrame, eyeFrame);
 
+		// 虹彩検出
+		cv::equalizeHist(eyeFrame, eyeFrame);
+		cv::threshold(eyeFrame, eyeFrame, irisThresh, 255, cv::THRESH_BINARY_INV);
+
+		int morphSize = 1;
+		cv::Mat element = cv::getStructuringElement(0, cv::Size(2 * morphSize + 1, 2 * morphSize + 1), cv::Point(morphSize, morphSize));
+		cv::morphologyEx(eyeFrame, eyeFrame, cv::MORPH_CLOSE, element);
+		cv::morphologyEx(eyeFrame, eyeFrame, cv::MORPH_OPEN, element);
+		cv::bitwise_not(eyeFrame, eyeFrame);
+
+		cv::GaussianBlur(eyeFrame, eyeFrame, cv::Size(5, 5), 0);
+		cv::threshold(eyeFrame, eyeFrame, 0, 255, cv::THRESH_BINARY);
+
+
+		int cannyThresh = 100;
+		cv::Mat cannyOutput;
+		cv::Canny(eyeFrame, cannyOutput, cannyThresh, cannyThresh * 2);
+		std::vector<std::vector<cv::Point>> contours;
+		cv::findContours(cannyOutput, contours, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+
+		std::vector<std::vector<cv::Point>> contoursPoly(contours.size());
+		std::vector<cv::Rect> boundRect(contours.size());
+		std::vector<cv::Point2f>centers(contours.size());
+		for (size_t i = 0; i < contours.size(); i++) {
+			approxPolyDP(contours[i], contoursPoly[i], 3, true);
+			boundRect[i] = boundingRect(contoursPoly[i]);
+		}
+
+		cv::Rect max;
+		for (auto rect : boundRect) {
+			if (max.width < rect.width) {
+				max = rect;
+			}
+		}
+		outIris = max;
+		//cv::rectangle(eyeFrame, max.tl(), max.br(), cv::Scalar(0, 0, 0), 2);
+		//cv::imshow("test", eyeFrame);
+	}
+}
+
+void SimpleMotionTracker::detectIrisDlib(int irisThresh, cv::Mat eyeFrame, cv::Rect eyeRect, cv::Rect& outIris) {
+	if (eyeRect.width > 0) {
 		// 虹彩検出
 		cv::equalizeHist(eyeFrame, eyeFrame);
 		cv::threshold(eyeFrame, eyeFrame, irisThresh, 255, cv::THRESH_BINARY_INV);
@@ -663,6 +726,178 @@ void SimpleMotionTracker::detectFace() {
 	}
 }
 
+void SimpleMotionTracker::detectFaceDlib() {
+	_isFacePointsDetected = false;
+
+	cv::Mat temp = _capFrame.clone();
+	dlib::cv_image<dlib::bgr_pixel> cimg(temp);
+	std::vector<dlib::rectangle> faces = _faceDetector(cimg);
+	if (faces.size() > 0) {
+		auto face = faces[0];
+		dlib::full_object_detection shape = _facePredictor(cimg, face);
+		auto minPoint = cv::Point(9999, 9999);
+		auto maxPoint = cv::Point(0, 0);
+		for (int i = 0; i < shape.num_parts(); i++)
+		{
+			if (shape.part(i).x() < minPoint.x) { minPoint.x = shape.part(i).x(); }
+			if (shape.part(i).x() > maxPoint.x) { maxPoint.x = shape.part(i).x(); }
+			if (shape.part(i).y() < minPoint.y) { minPoint.y = shape.part(i).y(); }
+			if (shape.part(i).y() > maxPoint.y) { maxPoint.y = shape.part(i).y(); }
+			cv::circle(_outputFrame, cv::Point2d(shape.part(i).x(), shape.part(i).y()), 3, cv::Scalar(0, 255, 0), -1);
+		}
+
+		{ // 顏の位置
+			auto faceRect = cv::Rect(minPoint.x, minPoint.y, maxPoint.x - minPoint.x, maxPoint.y - minPoint.y);
+			auto p = cv::Point(faceRect.x + faceRect.width / 2, faceRect.y + faceRect.height / 2);
+			auto r = (faceRect.width + faceRect.height) / 2 / 2; // 平均の半分
+			cv::circle(_outputFrame, p, r, cv::Scalar(255, 0, 255), 2);
+			_faceCircle[0] = p.x;
+			_faceCircle[1] = p.y;
+			_faceCircle[2] = r;
+		}
+
+		{ // 左目の位置
+			auto& p1 = shape.part(42);
+			auto& p2 = shape.part(45);
+			auto p = cv::Point(
+				(p1.x() + p2.x()) / 2,
+				(p1.y() + p2.y()) / 2);
+			auto toX = p2.x() - p1.x();
+			auto toY = p2.y() - p1.y();
+			auto r = std::sqrtf((toX * toX) + (toY * toY)) / 2;
+			cv::circle(_outputFrame, p, r, cv::Scalar(255, 255, 0), 2);
+			_leftEyeCircle[0] = p.x;
+			_leftEyeCircle[1] = p.y;
+			_leftEyeCircle[2] = r;
+		}
+
+		{ // 右目の位置
+			auto& p1 = shape.part(36);
+			auto& p2 = shape.part(39);
+			auto p = cv::Point(
+				(p1.x() + p2.x()) / 2,
+				(p1.y() + p2.y()) / 2);
+			auto toX = p2.x() - p1.x();
+			auto toY = p2.y() - p1.y();
+			auto r = std::sqrtf((toX * toX) + (toY * toY)) / 2;
+			cv::circle(_outputFrame, p, r, cv::Scalar(255, 255, 0), 2);
+			_rightEyeCircle[0] = p.x;
+			_rightEyeCircle[1] = p.y;
+			_rightEyeCircle[2] = r;
+		}
+
+		// 虹彩検出
+		if (_useEyesTracking) {
+			cv::Rect leftIris;
+			cv::Rect rightIris;
+
+			cv::Mat frameGray;
+			cv::cvtColor(_capFrame, frameGray, cv::COLOR_BGR2GRAY);
+
+			{ // 左虹彩
+				auto eyeRect = cv::Rect(
+					_leftEyeCircle[0] - _leftEyeCircle[2],
+					_leftEyeCircle[1] - _leftEyeCircle[2],
+					_leftEyeCircle[2] * 2,
+					_leftEyeCircle[2] * 2);
+				if (eyeRect.x >= 0 &&
+					eyeRect.y >= 0 &&
+					eyeRect.x + eyeRect.width < frameGray.cols &&
+					eyeRect.y + eyeRect.height < frameGray.rows) {
+					cv::Mat eyeFrame = frameGray(eyeRect);
+					detectIrisDlib(_irisThresh, eyeFrame, eyeRect, leftIris);
+
+					if (eyeRect.width > 0 && leftIris.width > 0) {
+						leftIris.x += eyeRect.x;
+						leftIris.y += eyeRect.y;
+
+						auto& p1 = shape.part(43);
+						auto& p2 = shape.part(47);
+						auto toX = p2.x() - p1.x();
+						auto toY = p2.y() - p1.y();
+						auto vertical = std::sqrtf((toX * toX) + (toY * toY));
+						auto horizontal = _leftEyeCircle[2];
+
+						auto p = cv::Point(leftIris.x + leftIris.width / 2, leftIris.y + leftIris.height / 2);
+						cv::circle(_outputFrame, p, leftIris.height / 2, cv::Scalar(0, 0, 255), 2);
+						_leftIrisCircle[0] = p.x;
+						_leftIrisCircle[1] = p.y;
+						_leftIrisCircle[2] = vertical / horizontal;
+					}
+				}
+			}
+
+			{ // 右虹彩
+				auto eyeRect = cv::Rect(
+					_rightEyeCircle[0] - _rightEyeCircle[2],
+					_rightEyeCircle[1] - _rightEyeCircle[2],
+					_rightEyeCircle[2] * 2,
+					_rightEyeCircle[2] * 2);
+				if (eyeRect.x >= 0 &&
+					eyeRect.y >= 0 &&
+					eyeRect.x + eyeRect.width < frameGray.cols &&
+					eyeRect.y + eyeRect.height < frameGray.rows) {
+					cv::Mat eyeFrame = frameGray(eyeRect);
+					detectIrisDlib(_irisThresh, eyeFrame, eyeRect, rightIris);
+
+					if (eyeRect.width > 0 && rightIris.width > 0) {
+						rightIris.x += eyeRect.x;
+						rightIris.y += eyeRect.y;
+
+						auto& p1 = shape.part(38);
+						auto& p2 = shape.part(40);
+						auto toX = p2.x() - p1.x();
+						auto toY = p2.y() - p1.y();
+						auto vertical = std::sqrtf((toX * toX) + (toY * toY));
+						auto horizontal = _rightEyeCircle[2];
+
+
+						auto p = cv::Point(rightIris.x + rightIris.width / 2, rightIris.y + rightIris.height / 2);
+						cv::circle(_outputFrame, p, rightIris.height / 2, cv::Scalar(0, 0, 255), 2);
+						_rightIrisCircle[0] = p.x;
+						_rightIrisCircle[1] = p.y;
+						_rightIrisCircle[2] = vertical / horizontal;
+					}
+				}
+			}
+		}
+
+		// 向き推定
+		// 顏のパーツの位置関係からおおよその傾きを推定する
+		auto nosePoint = cv::Point2d(shape.part(30).x(), shape.part(30).y()); // 鼻の中心
+		auto leftEye = cv::Point2d(shape.part(36).x(), shape.part(36).y()); // 左目の左端
+		auto rightEye = cv::Point2d(shape.part(45).x(), shape.part(45).y()); // 右目の右端
+
+		// Z軸での傾きを両目の位置関係から計算
+		auto eyesTilt = cv::Point2d(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
+		float angleZ = rad_to_deg(-std::atan2(eyesTilt.y, eyesTilt.x));
+
+		auto radius = _faceCircle[2];
+		auto diffNoseAndFaceCenter = cv::Point2d(_faceCircle[0] - nosePoint.x, _faceCircle[1] - nosePoint.y); // 顏の中心との差
+		auto angleX = rad_to_deg(std::asin(diffNoseAndFaceCenter.y / radius));
+		auto angleY = rad_to_deg(std::asin(diffNoseAndFaceCenter.x / radius));
+
+		_faceAngle[0] = angleX;
+		_faceAngle[1] = angleY;
+		_faceAngle[2] = angleZ;
+
+		// オイラー角の変換結果を表示 Debug用
+		std::ostringstream outtext;
+		//outtext << "X: " << std::setprecision(3) << _faceAngle[0];
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 40), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+		//outtext << "Y: " << std::setprecision(3) << _faceAngle[1];
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 60), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+		//outtext << "Z: " << std::setprecision(3) << _faceAngle[2];
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+
+		_isFacePointsDetected = true;
+		return;
+	}
+}
+
 bool SimpleMotionTracker::isFacePointsDetected() {
 	return _isFacePointsDetected;
 }
@@ -683,6 +918,9 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[12] = _rightIrisCircle[0];
 	outArray[13] = _rightIrisCircle[1];
 	outArray[14] = _rightIrisCircle[2];
+	outArray[15] = _faceAngle[0];
+	outArray[16] = _faceAngle[1];
+	outArray[17] = _faceAngle[2];
 }
 
 void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, bool& isHandDown, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame) {
@@ -783,7 +1021,7 @@ void SimpleMotionTracker::detectHand() {
 	if (_useFaceTracking) {
 		faceCenter.x = _faceCircle[0];
 		faceCenter.y = _faceCircle[1];
-		faceRadius = _faceCircle[2];
+		faceRadius = _faceCircle[2] * 1.5f;
 	}
 	else {
 		std::vector<cv::Rect> faces; // 複数検出を考慮.
@@ -798,7 +1036,7 @@ void SimpleMotionTracker::detectHand() {
 			f.width /= resizeRate;
 			f.height /= resizeRate;
 			faceCenter = cv::Point(f.x + f.width / 2, f.y + f.height / 2);
-			faceRadius = f.width / 2;
+			faceRadius = (f.width / 2) * 1.5f;
 			_faceCircle[0] = faceCenter.x;
 			_faceCircle[1] = faceCenter.y;
 			_faceCircle[2] = faceRadius;
@@ -821,9 +1059,9 @@ void SimpleMotionTracker::detectHand() {
 
 	int originalFaceRadius = faceRadius;
 	int shoulderY = faceCenter.y + (faceRadius * 1.5f); // 肩の位置推定
-	int handShutterMaskMargin = faceRadius * 2;
+	int handShutterMaskMargin = faceRadius * 1;
 
-	float resizeRatio = 0.5f;
+	float resizeRatio = 1.0f;
 	cv::Mat handBSMask;
 	cv::resize(handFrameGray, handFrameGray, cv::Size(handFrameGray.cols * resizeRatio, handFrameGray.rows * resizeRatio));
 	_handBackSub->apply(handFrameGray, handBSMask, 0.999);
@@ -1019,19 +1257,19 @@ void SimpleMotionTracker::getHandPoints(float* outArray) {
 ----------------------------------------------------------*/
 static SimpleMotionTracker* instance = nullptr;
 
-void SMT_initRaw(int cameraId) {
+void SMT_initRaw(int cameraId, const char* dataPath) {
 	if (instance == nullptr) {
 		instance = new SimpleMotionTracker();
 	}
-	instance->init(cameraId);
+	instance->init(cameraId, dataPath);
 }
 
-void SMT_init(const char* videoDeviceName) {
+void SMT_init(const char* videoDeviceName, const char* dataPath) {
 	if (instance ==nullptr) {
 		instance = new SimpleMotionTracker();
 	}
 	std::string name = videoDeviceName;
-	instance->init(name);
+	instance->init(name, dataPath);
 }
 
 void SMT_destroy() {

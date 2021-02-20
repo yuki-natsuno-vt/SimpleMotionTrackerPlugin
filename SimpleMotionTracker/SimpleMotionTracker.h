@@ -15,8 +15,8 @@ extern "C" {
 	static const int SMT_ERROR_UNREADABLE_CAMERA = -5;
 	static const int SMT_ERROR_INSUFFICIENT_CAMERA_CAPTURE_SPEED = -6;
 
-	SIMPLEMOTIONTRACKER_API void SMT_initRaw(int cameraId);
-	SIMPLEMOTIONTRACKER_API void SMT_init(const char* videoDeviceName);
+	SIMPLEMOTIONTRACKER_API void SMT_initRaw(int cameraId, const char* dataPath);
+	SIMPLEMOTIONTRACKER_API void SMT_init(const char* videoDeviceName, const char* dataPath);
 	SIMPLEMOTIONTRACKER_API void SMT_destroy();
 	SIMPLEMOTIONTRACKER_API void SMT_update();
 
