@@ -18,6 +18,9 @@
 #include <dlib/image_processing/render_face_detections.h>
 #include <dlib/image_processing.h>
 
+double K[9] = { 6.5746697810243404e+002, 0.0, 3.1950000000000000e+002, 0.0, 6.5746697810243404e+002, 2.3950000000000000e+002, 0.0, 0.0, 1.0 };
+double D[5] = { -4.1802327018241026e-001, 5.0715243805833121e-001, 0.0, 0.0, -5.7843596847939704e-001 };
+
 class SimpleMotionTracker {
 public:
 	void initVideoDeviceList();
@@ -101,6 +104,7 @@ private:
 
 	dlib::frontal_face_detector _faceDetector;
 	dlib::shape_predictor _facePredictor;
+	std::vector<cv::Point3d> _object3DPoints;
 
 	bool _isFacePointsDetected = false;
 	float _faceCircle[3]; // X,Y,半径
@@ -108,6 +112,7 @@ private:
 	float _rightEyeCircle[3];
 	float _leftIrisCircle[3];
 	float _rightIrisCircle[3];
+	float _faceAngle[3]; // X,Y,Z
 
 	int _irisThresh = 30;
 
@@ -189,11 +194,27 @@ void SimpleMotionTracker::init(int cameraId) {
 	// カメラパラメータ読み込み.
 	loadCameraParam("data/camera_param.xml");
 
-	//Dlibテスト
-	{
-		_faceDetector = dlib::get_frontal_face_detector();
-		dlib::deserialize("data/sp_human_face_68_for_mobile.dat") >> _facePredictor;
-	}
+	// Dlib用顏検出器とランドマークを読み込み
+	_faceDetector = dlib::get_frontal_face_detector();
+	dlib::deserialize("data/sp_human_face_68_for_mobile.dat") >> _facePredictor;
+
+	_object3DPoints.clear();
+
+	// https://github.com/lincolnhard/head-pose-estimation/blob/master/video_test_shape.cpp
+	_object3DPoints.push_back(cv::Point3d(6.825897, 6.760612, 4.402142));     //#33 left brow left corner
+	_object3DPoints.push_back(cv::Point3d(1.330353, 7.122144, 6.903745));     //#29 left brow right corner
+	_object3DPoints.push_back(cv::Point3d(-1.330353, 7.122144, 6.903745));    //#34 right brow left corner
+	_object3DPoints.push_back(cv::Point3d(-6.825897, 6.760612, 4.402142));    //#38 right brow right corner
+	_object3DPoints.push_back(cv::Point3d(5.311432, 5.485328, 3.987654));     //#13 left eye left corner
+	_object3DPoints.push_back(cv::Point3d(1.789930, 5.393625, 4.413414));     //#17 left eye right corner
+	_object3DPoints.push_back(cv::Point3d(-1.789930, 5.393625, 4.413414));    //#25 right eye left corner
+	_object3DPoints.push_back(cv::Point3d(-5.311432, 5.485328, 3.987654));    //#21 right eye right corner
+	_object3DPoints.push_back(cv::Point3d(2.005628, 1.409845, 6.165652));     //#55 nose left corner
+	_object3DPoints.push_back(cv::Point3d(-2.005628, 1.409845, 6.165652));    //#49 nose right corner
+	_object3DPoints.push_back(cv::Point3d(2.774015, -2.080775, 5.048531));    //#43 mouth left corner
+	_object3DPoints.push_back(cv::Point3d(-2.774015, -2.080775, 5.048531));   //#39 mouth right corner
+	_object3DPoints.push_back(cv::Point3d(0.000000, -3.116408, 6.097667));    //#45 mouth central bottom corner
+	_object3DPoints.push_back(cv::Point3d(0.000000, -7.415691, 4.070434));    //#6 chin corner
 
 	// マーカー検出
 	_markerIds.clear();
@@ -214,6 +235,7 @@ void SimpleMotionTracker::init(int cameraId) {
 		_rightEyeCircle[i] = 0;
 		_leftIrisCircle[i] = 0;
 		_rightIrisCircle[i] = 0;
+		_faceAngle[i] = 0;
 	}
 
 	// 手検出
@@ -858,6 +880,67 @@ void SimpleMotionTracker::detectFaceDlib() {
 			}
 		}
 
+		// 向き推定
+		std::vector<cv::Point2d> object2DPoints;
+		object2DPoints.push_back(cv::Point2d(shape.part(17).x(), shape.part(17).y())); //#17 left brow left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(21).x(), shape.part(21).y())); //#21 left brow right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(22).x(), shape.part(22).y())); //#22 right brow left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(26).x(), shape.part(26).y())); //#26 right brow right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(36).x(), shape.part(36).y())); //#36 left eye left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(39).x(), shape.part(39).y())); //#39 left eye right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(42).x(), shape.part(42).y())); //#42 right eye left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(45).x(), shape.part(45).y())); //#45 right eye right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(31).x(), shape.part(31).y())); //#31 nose left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(35).x(), shape.part(35).y())); //#35 nose right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(48).x(), shape.part(48).y())); //#48 mouth left corner
+		object2DPoints.push_back(cv::Point2d(shape.part(54).x(), shape.part(54).y())); //#54 mouth right corner
+		object2DPoints.push_back(cv::Point2d(shape.part(57).x(), shape.part(57).y())); //#57 mouth central bottom corner
+		object2DPoints.push_back(cv::Point2d(shape.part(8).x(), shape.part(8).y()));   //#8 chin corner
+
+		cv::Mat rvec, tvec;
+		cv::solvePnP(_object3DPoints, object2DPoints, _cameraMatrix, _distCoeffs, rvec, tvec);
+
+		// 向き推定用ポイントの描画 Debug用
+		//for (auto p : object2DPoints) {
+		//	cv::circle(_outputFrame, p, 3, cv::Scalar(0, 0, 255), -1);
+		//}
+
+		// 向きを表す線を描き込む Debug用
+		//std::vector<cv::Point3d> noseEndPoint3D;
+		//std::vector<cv::Point2d> noseEndPoint2D;
+		//noseEndPoint3D.push_back(cv::Point3d(0.000000, -7.415691, 4.070434 * 2));
+		//cv::projectPoints(noseEndPoint3D, rvec, tvec, _cameraMatrix, _distCoeffs, noseEndPoint2D);
+		//cv::line(_outputFrame, cv::Point2d(shape.part(8).x(), shape.part(8).y()), noseEndPoint2D[0], cv::Scalar(255, 0, 0), 2);
+
+
+		// オイラー角に変換
+		cv::Mat rmat;
+		cv::Rodrigues(rvec, rmat);
+
+		cv::Mat poseMat;
+		cv::hconcat(rmat, tvec, poseMat);
+
+		cv::Mat outIntrinsics;
+		cv::Mat outRotation;
+		cv::Mat outTranslation;
+		cv::Mat eulerAngle;
+		cv::decomposeProjectionMatrix(poseMat, outIntrinsics, outRotation, outTranslation, cv::noArray(), cv::noArray(), cv::noArray(), eulerAngle);
+
+		// オイラー角の変換結果を表示 Debug用
+		//std::ostringstream outtext;
+		//outtext << "X: " << std::setprecision(3) << eulerAngle.at<double>(0);
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 40), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+		//outtext << "Y: " << std::setprecision(3) << eulerAngle.at<double>(1);
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 60), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+		//outtext << "Z: " << std::setprecision(3) << eulerAngle.at<double>(2);
+		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
+		//outtext.str("");
+		_faceAngle[0] = eulerAngle.at<double>(0);
+		_faceAngle[1] = eulerAngle.at<double>(1);
+		_faceAngle[2] = eulerAngle.at<double>(2);
+
 		_isFacePointsDetected = true;
 		return;
 	}
@@ -883,6 +966,9 @@ void SimpleMotionTracker::getFacePoints(float* outArray) {
 	outArray[12] = _rightIrisCircle[0];
 	outArray[13] = _rightIrisCircle[1];
 	outArray[14] = _rightIrisCircle[2];
+	outArray[15] = _faceAngle[0];
+	outArray[16] = _faceAngle[1];
+	outArray[17] = _faceAngle[2];
 }
 
 void SimpleMotionTracker::detectHandCircle(float* handCircle, bool& isHandDetected, bool& isHandDown, int& handUndetectedTick, const cv::Point& point, std::vector<cv::Point>& points, float minHandRadius, float maxHandRadius, std::list<float>& radiusBuf, float resizeRatio, cv::Mat frame) {
@@ -983,7 +1069,7 @@ void SimpleMotionTracker::detectHand() {
 	if (_useFaceTracking) {
 		faceCenter.x = _faceCircle[0];
 		faceCenter.y = _faceCircle[1];
-		faceRadius = _faceCircle[2];
+		faceRadius = _faceCircle[2] * 1.5f;
 	}
 	else {
 		std::vector<cv::Rect> faces; // 複数検出を考慮.
@@ -998,7 +1084,7 @@ void SimpleMotionTracker::detectHand() {
 			f.width /= resizeRate;
 			f.height /= resizeRate;
 			faceCenter = cv::Point(f.x + f.width / 2, f.y + f.height / 2);
-			faceRadius = f.width / 2;
+			faceRadius = (f.width / 2) * 1.5f;
 			_faceCircle[0] = faceCenter.x;
 			_faceCircle[1] = faceCenter.y;
 			_faceCircle[2] = faceRadius;
@@ -1021,7 +1107,7 @@ void SimpleMotionTracker::detectHand() {
 
 	int originalFaceRadius = faceRadius;
 	int shoulderY = faceCenter.y + (faceRadius * 1.5f); // 肩の位置推定
-	int handShutterMaskMargin = faceRadius * 2;
+	int handShutterMaskMargin = faceRadius * 1;
 
 	float resizeRatio = 1.0f;
 	cv::Mat handBSMask;
@@ -1186,7 +1272,7 @@ void SimpleMotionTracker::detectHand() {
 			if (_rightHandUndetectedTick > _handUndetectedDuration) { _rightHandUndetectedTick -= _handUndetectedDuration; }
 		}
 	}
-	cv::imshow("Live", handBSMask);
+	//cv::imshow("Live", handBSMask);
 }
 
 bool SimpleMotionTracker::isLeftHandDetected() {
