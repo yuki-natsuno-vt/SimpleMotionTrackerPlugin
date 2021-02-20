@@ -18,8 +18,9 @@
 #include <dlib/image_processing/render_face_detections.h>
 #include <dlib/image_processing.h>
 
-double K[9] = { 6.5746697810243404e+002, 0.0, 3.1950000000000000e+002, 0.0, 6.5746697810243404e+002, 2.3950000000000000e+002, 0.0, 0.0, 1.0 };
-double D[5] = { -4.1802327018241026e-001, 5.0715243805833121e-001, 0.0, 0.0, -5.7843596847939704e-001 };
+#define M_PI 3.14159265359
+#define deg_to_rad(deg) (((deg)/180)*M_PI)
+#define rad_to_deg(rad) (((rad)/M_PI)*180)
 
 class SimpleMotionTracker {
 public:
@@ -104,7 +105,6 @@ private:
 
 	dlib::frontal_face_detector _faceDetector;
 	dlib::shape_predictor _facePredictor;
-	std::vector<cv::Point3d> _object3DPoints;
 
 	bool _isFacePointsDetected = false;
 	float _faceCircle[3]; // X,Y,半径
@@ -197,24 +197,6 @@ void SimpleMotionTracker::init(int cameraId) {
 	// Dlib用顏検出器とランドマークを読み込み
 	_faceDetector = dlib::get_frontal_face_detector();
 	dlib::deserialize("data/sp_human_face_68_for_mobile.dat") >> _facePredictor;
-
-	_object3DPoints.clear();
-
-	// https://github.com/lincolnhard/head-pose-estimation/blob/master/video_test_shape.cpp
-	_object3DPoints.push_back(cv::Point3d(6.825897, 6.760612, 4.402142));     //#33 left brow left corner
-	_object3DPoints.push_back(cv::Point3d(1.330353, 7.122144, 6.903745));     //#29 left brow right corner
-	_object3DPoints.push_back(cv::Point3d(-1.330353, 7.122144, 6.903745));    //#34 right brow left corner
-	_object3DPoints.push_back(cv::Point3d(-6.825897, 6.760612, 4.402142));    //#38 right brow right corner
-	_object3DPoints.push_back(cv::Point3d(5.311432, 5.485328, 3.987654));     //#13 left eye left corner
-	_object3DPoints.push_back(cv::Point3d(1.789930, 5.393625, 4.413414));     //#17 left eye right corner
-	_object3DPoints.push_back(cv::Point3d(-1.789930, 5.393625, 4.413414));    //#25 right eye left corner
-	_object3DPoints.push_back(cv::Point3d(-5.311432, 5.485328, 3.987654));    //#21 right eye right corner
-	_object3DPoints.push_back(cv::Point3d(2.005628, 1.409845, 6.165652));     //#55 nose left corner
-	_object3DPoints.push_back(cv::Point3d(-2.005628, 1.409845, 6.165652));    //#49 nose right corner
-	_object3DPoints.push_back(cv::Point3d(2.774015, -2.080775, 5.048531));    //#43 mouth left corner
-	_object3DPoints.push_back(cv::Point3d(-2.774015, -2.080775, 5.048531));   //#39 mouth right corner
-	_object3DPoints.push_back(cv::Point3d(0.000000, -3.116408, 6.097667));    //#45 mouth central bottom corner
-	_object3DPoints.push_back(cv::Point3d(0.000000, -7.415691, 4.070434));    //#6 chin corner
 
 	// マーカー検出
 	_markerIds.clear();
@@ -881,65 +863,35 @@ void SimpleMotionTracker::detectFaceDlib() {
 		}
 
 		// 向き推定
-		std::vector<cv::Point2d> object2DPoints;
-		object2DPoints.push_back(cv::Point2d(shape.part(17).x(), shape.part(17).y())); //#17 left brow left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(21).x(), shape.part(21).y())); //#21 left brow right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(22).x(), shape.part(22).y())); //#22 right brow left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(26).x(), shape.part(26).y())); //#26 right brow right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(36).x(), shape.part(36).y())); //#36 left eye left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(39).x(), shape.part(39).y())); //#39 left eye right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(42).x(), shape.part(42).y())); //#42 right eye left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(45).x(), shape.part(45).y())); //#45 right eye right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(31).x(), shape.part(31).y())); //#31 nose left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(35).x(), shape.part(35).y())); //#35 nose right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(48).x(), shape.part(48).y())); //#48 mouth left corner
-		object2DPoints.push_back(cv::Point2d(shape.part(54).x(), shape.part(54).y())); //#54 mouth right corner
-		object2DPoints.push_back(cv::Point2d(shape.part(57).x(), shape.part(57).y())); //#57 mouth central bottom corner
-		object2DPoints.push_back(cv::Point2d(shape.part(8).x(), shape.part(8).y()));   //#8 chin corner
+		// 顏のパーツの位置関係からおおよその傾きを推定する
+		auto nosePoint = cv::Point2d(shape.part(30).x(), shape.part(30).y()); // 鼻の中心
+		auto leftEye = cv::Point2d(shape.part(36).x(), shape.part(36).y()); // 左目の左端
+		auto rightEye = cv::Point2d(shape.part(45).x(), shape.part(45).y()); // 右目の右端
 
-		cv::Mat rvec, tvec;
-		cv::solvePnP(_object3DPoints, object2DPoints, _cameraMatrix, _distCoeffs, rvec, tvec);
+		// Z軸での傾きを両目の位置関係から計算
+		auto eyesTilt = cv::Point2d(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
+		float angleZ = rad_to_deg(-std::atan2(eyesTilt.y, eyesTilt.x));
 
-		// 向き推定用ポイントの描画 Debug用
-		//for (auto p : object2DPoints) {
-		//	cv::circle(_outputFrame, p, 3, cv::Scalar(0, 0, 255), -1);
-		//}
+		auto radius = _faceCircle[2];
+		auto diffNoseAndFaceCenter = cv::Point2d(_faceCircle[0] - nosePoint.x, _faceCircle[1] - nosePoint.y); // 顏の中心との差
+		auto angleX = rad_to_deg(std::asin(diffNoseAndFaceCenter.y / radius));
+		auto angleY = rad_to_deg(std::asin(diffNoseAndFaceCenter.x / radius));
 
-		// 向きを表す線を描き込む Debug用
-		//std::vector<cv::Point3d> noseEndPoint3D;
-		//std::vector<cv::Point2d> noseEndPoint2D;
-		//noseEndPoint3D.push_back(cv::Point3d(0.000000, -7.415691, 4.070434 * 2));
-		//cv::projectPoints(noseEndPoint3D, rvec, tvec, _cameraMatrix, _distCoeffs, noseEndPoint2D);
-		//cv::line(_outputFrame, cv::Point2d(shape.part(8).x(), shape.part(8).y()), noseEndPoint2D[0], cv::Scalar(255, 0, 0), 2);
-
-
-		// オイラー角に変換
-		cv::Mat rmat;
-		cv::Rodrigues(rvec, rmat);
-
-		cv::Mat poseMat;
-		cv::hconcat(rmat, tvec, poseMat);
-
-		cv::Mat outIntrinsics;
-		cv::Mat outRotation;
-		cv::Mat outTranslation;
-		cv::Mat eulerAngle;
-		cv::decomposeProjectionMatrix(poseMat, outIntrinsics, outRotation, outTranslation, cv::noArray(), cv::noArray(), cv::noArray(), eulerAngle);
+		_faceAngle[0] = angleX;
+		_faceAngle[1] = angleY;
+		_faceAngle[2] = angleZ;
 
 		// オイラー角の変換結果を表示 Debug用
-		//std::ostringstream outtext;
-		//outtext << "X: " << std::setprecision(3) << eulerAngle.at<double>(0);
+		std::ostringstream outtext;
+		//outtext << "X: " << std::setprecision(3) << _faceAngle[0];
 		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 40), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
 		//outtext.str("");
-		//outtext << "Y: " << std::setprecision(3) << eulerAngle.at<double>(1);
+		//outtext << "Y: " << std::setprecision(3) << _faceAngle[1];
 		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 60), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
 		//outtext.str("");
-		//outtext << "Z: " << std::setprecision(3) << eulerAngle.at<double>(2);
+		//outtext << "Z: " << std::setprecision(3) << _faceAngle[2];
 		//cv::putText(_outputFrame, outtext.str(), cv::Point(50, 80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0, 0, 0));
 		//outtext.str("");
-		_faceAngle[0] = eulerAngle.at<double>(0);
-		_faceAngle[1] = eulerAngle.at<double>(1);
-		_faceAngle[2] = eulerAngle.at<double>(2);
 
 		_isFacePointsDetected = true;
 		return;
