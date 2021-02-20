@@ -25,8 +25,8 @@
 class SimpleMotionTracker {
 public:
 	void initVideoDeviceList();
-	void init(const std::string& videoDeviceName);
-	void init(int cameraId);
+	void init(const std::string& videoDeviceName, const std::string& dataPath);
+	void init(int cameraId, const std::string& dataPath);
 	void destroy();
 	void update();
 
@@ -143,7 +143,7 @@ void SimpleMotionTracker::initVideoDeviceList() {
 	std::map<int, Device> devices = de.getVideoDevicesMap();
 }
 
-void SimpleMotionTracker::init(const std::string& videoDeviceName) {
+void SimpleMotionTracker::init(const std::string& videoDeviceName, const std::string& dataPath) {
 	int cameraId = -1;
 	DeviceEnumerator de;
 	std::map<int, Device> devices = de.getVideoDevicesMap();
@@ -153,10 +153,10 @@ void SimpleMotionTracker::init(const std::string& videoDeviceName) {
 			break;
 		}
 	}
-	init(cameraId);
+	init(cameraId, dataPath);
 }
 
-void SimpleMotionTracker::init(int cameraId) {
+void SimpleMotionTracker::init(int cameraId, const std::string& dataPath) {
 	// デバイスを開く.
 	_cap.open(cameraId);
 
@@ -181,22 +181,22 @@ void SimpleMotionTracker::init(int cameraId) {
 		return;
 	}
 
-	if (!_faceCascade.load("data/haarcascade_frontalface_alt.xml")) {
+	if (!_faceCascade.load(dataPath + "haarcascade_frontalface_alt.xml")) {
 		_errorCode = SMT_ERROR_UNOPEN_FACE_CASCADE;
 		return;
 	}
 
-	if (!_eyesCascade.load("data/haarcascade_eye.xml")) {
+	if (!_eyesCascade.load(dataPath + "haarcascade_eye.xml")) {
 		_errorCode = SMT_ERROR_UNOPEN_EYE_CASCADE;
 		return;
 	}
 
 	// カメラパラメータ読み込み.
-	loadCameraParam("data/camera_param.xml");
+	loadCameraParam(dataPath + "camera_param.xml");
 
 	// Dlib用顏検出器とランドマークを読み込み
 	_faceDetector = dlib::get_frontal_face_detector();
-	dlib::deserialize("data/sp_human_face_68_for_mobile.dat") >> _facePredictor;
+	dlib::deserialize(dataPath + "sp_human_face_68_for_mobile.dat") >> _facePredictor;
 
 	// マーカー検出
 	_markerIds.clear();
@@ -1257,19 +1257,19 @@ void SimpleMotionTracker::getHandPoints(float* outArray) {
 ----------------------------------------------------------*/
 static SimpleMotionTracker* instance = nullptr;
 
-void SMT_initRaw(int cameraId) {
+void SMT_initRaw(int cameraId, const char* dataPath) {
 	if (instance == nullptr) {
 		instance = new SimpleMotionTracker();
 	}
-	instance->init(cameraId);
+	instance->init(cameraId, dataPath);
 }
 
-void SMT_init(const char* videoDeviceName) {
+void SMT_init(const char* videoDeviceName, const char* dataPath) {
 	if (instance ==nullptr) {
 		instance = new SimpleMotionTracker();
 	}
 	std::string name = videoDeviceName;
-	instance->init(name);
+	instance->init(name, dataPath);
 }
 
 void SMT_destroy() {

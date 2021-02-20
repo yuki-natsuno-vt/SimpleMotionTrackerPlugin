@@ -4,7 +4,7 @@
 int main() {
 	//SMT_init("Logicool HD Webcam C270");
 	//SMT_init("FaceRig Virtual Camera");
-	SMT_initRaw(1);
+	SMT_initRaw(1, "data/");
 	SMT_setCaptureShown(true);
 	SMT_setARMarkerEdgeLength(0.036f);
 	SMT_setUseFaceTracking(true);
